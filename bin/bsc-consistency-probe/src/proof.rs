@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
-    mpt::{decode_account, verify_account_proof, verify_storage_proof},
+    mpt::{decode_account, keccak, verify_account_proof, verify_storage_proof},
     rpc::RpcClient,
 };
 
@@ -49,8 +49,43 @@ pub struct VerifiedAddress {
     pub slots: Vec<VerifiedSlot>,
 }
 
+/// Strips a leading `0x`/`0X` prefix, if present.
+fn strip_0x(s: &str) -> &str {
+    s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s)
+}
+
 fn hex_to_bytes(s: &str) -> Vec<u8> {
-    hex::decode(s.trim_start_matches("0x")).unwrap_or_default()
+    hex::decode(strip_0x(s)).unwrap_or_default()
+}
+
+/// The EIP-55 mixed-case checksum form of an address, without the `0x`.
+///
+/// The digest is taken over the lowercase hex text, so the result depends only
+/// on the 20 address bytes.
+fn to_checksum(addr: &H160) -> String {
+    let lower = hex::encode(addr.as_bytes());
+    let hash = keccak(lower.as_bytes());
+    lower
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let nibble = if i % 2 == 0 { hash[i / 2] >> 4 } else { hash[i / 2] & 0x0f };
+            if c.is_ascii_alphabetic() && nibble >= 8 { c.to_ascii_uppercase() } else { c }
+        })
+        .collect()
+}
+
+/// Whether the spelling of `s` is an acceptable way to write `addr`.
+///
+/// An all-lowercase or all-uppercase address carries no checksum, so both are
+/// accepted verbatim. Mixed-case input is validated against EIP-55: that is
+/// the whole point of the encoding, and it is what turns a transcription slip
+/// into an error instead of a probe run against the wrong address.
+fn has_valid_checksum(addr: &H160, s: &str) -> bool {
+    let body = strip_0x(s);
+    body == to_checksum(addr) ||
+        body == body.to_ascii_lowercase() ||
+        body == body.to_ascii_uppercase()
 }
 
 fn parse_address(s: &str) -> Result<H160> {
@@ -60,7 +95,14 @@ fn parse_address(s: &str) -> Result<H160> {
     }
     let mut a = [0u8; 20];
     a.copy_from_slice(&b);
-    Ok(H160::from(a))
+    let addr = H160::from(a);
+    if !has_valid_checksum(&addr, s) {
+        return Err(eyre!(
+            "address {s} fails its EIP-55 checksum; the correct spelling is 0x{}",
+            to_checksum(&addr)
+        ));
+    }
+    Ok(addr)
 }
 
 fn parse_slot(s: &str) -> Result<U256> {
@@ -275,7 +317,7 @@ mod tests {
 
     #[test]
     fn parse_address_20_bytes() {
-        let a = parse_address("0xbb4CdB9CBd36B01bC983AEC51fA2d8c5b2f3f3a7").unwrap();
+        let a = parse_address("0xBb4cDB9CBD36b01bc983AEC51fA2D8C5B2F3f3A7").unwrap();
         assert_eq!(
             a,
             H160::from([
@@ -293,7 +335,7 @@ mod tests {
         // 19 bytes.
         assert!(parse_address("0xbb4CdB9CBd36B01bC983AEC51fA2d8c5b2f3f3").is_err());
         // 21 bytes.
-        assert!(parse_address("0xbb4CdB9CBd36B01bC983AEC51fA2d8c5b2f3f3a700").is_err());
+        assert!(parse_address("0xBb4cDB9CBD36b01bc983AEC51fA2D8C5B2F3f3A700").is_err());
     }
 
     #[test]
@@ -334,7 +376,7 @@ mod tests {
     #[test]
     fn parse_address_list_splits_and_trims() {
         let list = parse_address_list(
-            "0xbb4CdB9CBd36B01bC983AEC51fA2d8c5b2f3f3a7, \
+            "0xBb4cDB9CBD36b01bc983AEC51fA2D8C5B2F3f3A7, \
              0x55d398326f99059fF775485246999027B3197955",
         )
         .unwrap();
@@ -351,7 +393,7 @@ mod tests {
     #[test]
     fn parse_address_list_skips_empty_entries() {
         let list = parse_address_list(
-            "0xbb4CdB9CBd36B01bC983AEC51fA2d8c5b2f3f3a7,, \
+            "0xBb4cDB9CBD36b01bc983AEC51fA2D8C5B2F3f3A7,, \
              ,0x55d398326f99059fF775485246999027B3197955",
         )
         .unwrap();
@@ -401,14 +443,15 @@ mod tests {
     #[test]
     fn default_addresses_carry_valid_eip55_checksums() {
         for a in default_mainnet_addresses() {
-            assert_eq!(format!("0x{}", eip55(a)), *a, "bad EIP-55 checksum for {a}");
+            let addr = parse_address(a).unwrap();
+            assert_eq!(format!("0x{}", to_checksum(&addr)), *a, "bad EIP-55 checksum for {a}");
         }
     }
 
-    /// Pins the checksum helper to the reference vectors from EIP-55 itself,
+    /// Pins the checksum routine to the reference vectors from EIP-55 itself,
     /// so a subtly wrong implementation cannot silently bless a typo.
     #[test]
-    fn eip55_matches_the_reference_vectors() {
+    fn to_checksum_matches_the_reference_vectors() {
         for expected in [
             "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
             "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
@@ -416,33 +459,82 @@ mod tests {
             "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb",
         ] {
             let body = expected.strip_prefix("0x").expect("vector is 0x-prefixed");
-            assert_eq!(eip55(expected), body, "EIP-55 vector mismatch");
+            let addr = H160::from_slice(&hex_to_bytes(expected));
+            assert_eq!(to_checksum(&addr), body, "EIP-55 vector mismatch");
         }
     }
 
-    /// Computes the EIP-55 mixed-case checksum form of a hex address.
-    ///
-    /// The digest is taken over the *lowercase* text, so the result is stable
-    /// regardless of the casing of `addr`.
-    fn eip55(addr: &str) -> String {
-        let lower = addr.strip_prefix("0x").unwrap_or(addr).to_ascii_lowercase();
-        let hash = crate::mpt::keccak(lower.as_bytes());
-        lower
-            .chars()
-            .enumerate()
-            .map(|(i, c)| {
-                let nibble = if i % 2 == 0 { hash[i / 2] >> 4 } else { hash[i / 2] & 0x0f };
-                if c.is_ascii_alphabetic() && nibble >= 8 { c.to_ascii_uppercase() } else { c }
-            })
-            .collect()
+    // ------------------------------------------------------------------
+    // EIP-55 validation in the parser
+    // ------------------------------------------------------------------
+
+    const CHECKSUMMED: &str = "0x55d398326f99059fF775485246999027B3197955";
+
+    #[test]
+    fn parse_address_accepts_a_valid_checksum() {
+        assert!(parse_address(CHECKSUMMED).is_ok());
     }
 
     #[test]
-    fn eip55_ignores_the_casing_it_is_given() {
-        // Checksumming must depend only on the address bytes.
-        let usdt = default_mainnet_addresses()[1];
-        assert_eq!(eip55(usdt), eip55(&usdt.to_ascii_lowercase()));
-        assert_ne!(eip55(usdt), "55d398326f99059ff775485246999027b3197955");
+    fn parse_address_rejects_a_broken_checksum() {
+        // Same 20 bytes, one hex digit changed but the casing pattern left in
+        // place. Without validation this parses to a different address, and the
+        // probe then reports a perfectly plausible "absent".
+        let typo = "0x55d398326f99059fF775485246999027B3197956";
+        let err = parse_address(typo).unwrap_err();
+        assert!(err.to_string().contains("EIP-55"), "unexpected: {err}");
+
+        // The error must name the correct spelling of what was typed, so the
+        // fix is copy-pasteable, and the bytes must really differ from USDT.
+        let suggested = err.to_string().rsplit("0x").next().unwrap_or_default().to_string();
+        let suggested = parse_address(&format!("0x{suggested}")).unwrap();
+        assert_ne!(suggested, parse_address(CHECKSUMMED).unwrap());
+    }
+
+    #[test]
+    fn parse_address_rejects_a_miscased_but_intact_address() {
+        // The same 20 bytes with one letter's case flipped. The address is
+        // unchanged, but the checksum no longer matches and that must be an
+        // error rather than a silently different reading of the address.
+        assert!(parse_address(&CHECKSUMMED.to_ascii_lowercase()).is_ok(), "all-lowercase is fine");
+        assert!(parse_address(&CHECKSUMMED.to_ascii_uppercase()).is_ok(), "all-uppercase is fine");
+        assert!(
+            parse_address("0x55d398326f99059ff775485246999027B3197955").is_err(),
+            "one flipped case bit must fail"
+        );
+    }
+
+    #[test]
+    fn parse_address_accepts_single_case_addresses() {
+        // All-lowercase and all-uppercase spellings carry no checksum at all,
+        // so they must not be rejected.
+        let lower = "0x55d398326f99059ff775485246999027b3197955";
+        let upper = "0x55D398326F99059FF775485246999027B3197955";
+        assert_eq!(parse_address(lower).unwrap(), parse_address(upper).unwrap());
+        assert_eq!(parse_address(CHECKSUMMED).unwrap(), parse_address(lower).unwrap());
+    }
+
+    #[test]
+    fn parse_address_accepts_addresses_without_letters() {
+        // All digits: lowercase == uppercase, so there is nothing to checksum.
+        let digits = "0x0000000000000000000000000000000000000123";
+        assert!(parse_address(digits).is_ok());
+    }
+
+    #[test]
+    fn parse_address_ignores_a_0x_prefix_case() {
+        assert_eq!(
+            parse_address(&format!("0x{}", &CHECKSUMMED[2..])).unwrap(),
+            parse_address(CHECKSUMMED).unwrap()
+        );
+        assert_eq!(parse_address(&CHECKSUMMED[2..]).unwrap(), parse_address(CHECKSUMMED).unwrap());
+    }
+
+    #[test]
+    fn parse_address_list_reports_a_bad_checksum() {
+        let list = format!("{CHECKSUMMED},0x55d398326f99059fF775485246999027B3197956");
+        let err = parse_address_list(&list).unwrap_err();
+        assert!(err.to_string().contains("EIP-55"), "unexpected: {err}");
     }
 
     // ------------------------------------------------------------------
