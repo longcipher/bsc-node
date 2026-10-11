@@ -1,0 +1,7 @@
+[files]
+extend-exclude = ["specs/**"]
+
+[default.extend-words]
+# BSC-specific terms (false positives otherwise)
+EVN = "EVN" # Enhanced Validator Network
+evn = "evn"

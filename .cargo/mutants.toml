@@ -1,0 +1,16 @@
+# Mutation testing configuration for cargo-mutants.
+#
+# Binary crate entry points (e.g. `fn main`) cannot be exercised by unit
+# tests, so their injected mutants would always survive. Keep mutation
+# focused on library crates where the domain logic lives.
+exclude_globs = ["bin/*/src/**"]
+
+[mutants]
+# Number of threads to use for mutation testing
+test_threads = "num-cpus"
+
+# Show surviving mutants in output
+show_survivors = true
+
+# Show mutation scores in output
+show_scores = true
