@@ -20,6 +20,7 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [dev-dependencies]
 proptest = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
 
 [lints]
 workspace = true
