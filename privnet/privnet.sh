@@ -30,8 +30,8 @@ MODE="${1:-mixed}"
 ACTION="start"
 case "$MODE" in
   go|rust|mixed) ACTION="${2:-start}" ;;
-  stop|status|clean|handover-to-rust|handover-to-go) ACTION="$MODE"; MODE="all" ;;
-  *) echo "usage: $0 {go|rust|mixed} [start] | $0 {stop|status|clean|handover-to-rust|handover-to-go}" >&2; exit 2 ;;
+  stop|status|clean|handover-to-rust|handover-to-go|system-contracts) ACTION="$MODE"; MODE="all" ;;
+  *) echo "usage: $0 {go|rust|mixed} [start] | $0 {stop|status|clean|handover-to-rust|handover-to-go|system-contracts}" >&2; exit 2 ;;
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -71,6 +71,21 @@ wait_rpc() { # wait_rpc <port> <timeout-secs>
   die "RPC on port $port did not come up within ${timeout}s"
 }
 
+# Fails loudly when a node answers on the wrong chain.
+#
+# `geth init` creates <datadir>/geth *before* it writes the genesis block, so a
+# failed init leaves a directory that makes every later run skip init entirely
+# (`if [ ! -d "$dir/geth" ]`). The node then finds a chaindata with no genesis,
+# silently falls back to the BSC mainnet chain config, and serves chain id 56.
+# That looks like a healthy node at every level a status check can see, so the
+# chain id is asserted explicitly.
+assert_chain_id() { # assert_chain_id <port> <expected-decimal> <label>
+  local port="$1" want="$2" label="$3" got
+  got=$(rpc "$port" eth_chainId | python3 -c "import json,sys; print(int(json.load(sys.stdin).get('result','0x0'),16))" 2>/dev/null || echo 0)
+  [ "$got" = "$want" ] || die "$label on port $port is on chain id $got, expected $want (genesis not applied?)"
+  log "$label on port $port is on chain id $got"
+}
+
 enode_from_log() { # enode_from_log <logfile>
   grep -o 'enode://[a-f0-9]*@[0-9.]*:[0-9]*' "$1" | head -1
 }
@@ -87,8 +102,15 @@ init_go_node() { # init_go_node <name>
     "$GETH_BIN" account import --datadir "$dir" --password "$dir/passfile" "$dir/validator.key" >/dev/null 2>&1
     touch "$dir/keystore_imported"
   fi
-  if [ ! -d "$dir/geth" ]; then
-    "$GETH_BIN" init --datadir "$dir" "$GENESIS" >/dev/null 2>&1
+  if [ ! -f "$dir/geth/chaindata/CURRENT" ]; then
+    # A failed `geth init` must be fatal, and must not leave the partial
+    # `geth/` directory behind: its presence is exactly what makes the next run
+    # skip init and come up on mainnet.
+    local out
+    if ! out=$("$GETH_BIN" init --datadir "$dir" "$GENESIS" 2>&1); then
+      rm -rf "$dir/geth"
+      die "geth init failed for $name: $(printf '%s' "$out" | grep -iE '^(Fatal|Error)' | tail -1)"
+    fi
   fi
   if [ ! -f "$dir/nodekey.hex" ]; then rand_hex32 > "$dir/nodekey.hex"; fi
 }
@@ -108,6 +130,7 @@ start_go_miner() { # start_go_miner <name> <p2p-port> <http-port>
     >"$dir/node.log" 2>&1 &
   echo $! > "$dir/pid"
   wait_rpc "$http"
+  assert_chain_id "$http" 1337 "$name"
 }
 
 start_go_follower() { # start_go_follower <name> <p2p-port> <http-port>
@@ -125,6 +148,7 @@ start_go_follower() { # start_go_follower <name> <p2p-port> <http-port>
     >"$dir/node.log" 2>&1 &
   echo $! > "$dir/pid"
   wait_rpc "$http"
+  assert_chain_id "$http" 1337 "$name"
 }
 
 go_add_peer() { # go_add_peer <datadir> <enode>
@@ -149,6 +173,7 @@ start_rust_node() { # start_rust_node <name> <p2p> <http> <authrpc> <trusted-eno
   "$RETH_BIN" "${args[@]}" >"$dir/node.out" 2>"$dir/node.log" &
   echo $! > "$dir/pid"
   wait_rpc "$http" 90
+  assert_chain_id "$http" 1337 "$name"
 }
 
 do_status() {
@@ -169,6 +194,7 @@ do_status() {
 }
 
 do_stop() {
+  local n pid i alive
   for n in go1 go2 rust1 rust2; do
     if [ -f "$DATA_DIR/$n/pid" ]; then
       pid=$(cat "$DATA_DIR/$n/pid")
@@ -176,12 +202,56 @@ do_stop() {
       rm -f "$DATA_DIR/$n/pid"
     fi
   done
+  # Wait for every node to actually exit before the caller wipes its datadir.
+  # A node still flushing during shutdown re-creates its chaindata directories
+  # after `rm -rf`, which resurrects a half-populated datadir that makes the
+  # next `geth init` skip and the next start come up on the wrong chain.
+  for i in $(seq 1 60); do
+    alive=0
+    for n in go1 go2 rust1 rust2; do
+      [ -d "$DATA_DIR/$n" ] || continue
+      for pid in $(pgrep -f -- "--datadir $DATA_DIR/$n" 2>/dev/null || true); do
+        kill -0 "$pid" 2>/dev/null && alive=1
+      done
+    done
+    [ "$alive" -eq 0 ] && return 0
+    sleep 1
+  done
+  log "warning: some nodes did not exit within 60s; escalating to SIGKILL"
+  for n in go1 go2 rust1 rust2; do
+    [ -d "$DATA_DIR/$n" ] || continue
+    pkill -KILL -f -- "--datadir $DATA_DIR/$n" 2>/dev/null || true
+  done
+  sleep 2
 }
 
 do_clean() {
   do_stop
   log "wiping chain data under $DATA_DIR"
   rm -rf "$DATA_DIR"/go1 "$DATA_DIR"/go2 "$DATA_DIR"/rust1 "$DATA_DIR"/rust2
+  local n
+  for n in go1 go2 rust1 rust2; do
+    [ -e "$DATA_DIR/$n" ] && die "failed to remove $DATA_DIR/$n"
+  done
+  return 0
+}
+
+# Regenerate genesis.json from bnb-chain/bsc-genesis-contract.
+#
+# A modern BSC chain calls its system contracts before assembling every payload,
+# so without them the block builder gives up (`ETH call returned no data`
+# against StakeHub at 0x2002) and no block is ever sealed. Those deployments are
+# upstream's, not ours; this refreshes them and re-applies the private
+# network's chain id, validator and fork schedule.
+do_system_contracts() {
+  need_bin python3 python3
+  if ! command -v git >/dev/null 2>&1; then die "git is required to fetch bsc-genesis-contract"; fi
+  if [ -f "$DATA_DIR/go1/pid" ] || [ -f "$DATA_DIR/rust1/pid" ]; then
+    die "stop the network first: $0 stop"
+  fi
+  log "regenerating genesis from bnb-chain/bsc-genesis-contract"
+  python3 "$SCRIPT_DIR/build-genesis.py" --out "$GENESIS" --chain-id 1337
+  log "done; run '$0 clean' before restarting so both clients re-init"
 }
 
 start_mode() { # start_mode <go|rust|mixed>
@@ -258,6 +328,7 @@ case "$ACTION" in
   stop) do_stop ;;
   status) do_status ;;
   clean) do_clean ;;
+  system-contracts) do_system_contracts ;;
   handover-to-rust) do_handover_to_rust ;;
   handover-to-go) do_handover_to_go ;;
 esac
