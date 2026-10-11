@@ -14,8 +14,6 @@ The workspace uses a Cargo workspace layout: executable crates live under `bin/*
 
 ## Crates
 
-- `bin/cli-app` — Example CLI (`clap`) demonstrating workspace conventions.
-- `crates/common` — Shared utility library used across crates.
 - `bin/bsc-consistency-probe` — Go vs Rust consistency probe (see next section).
 
 ## Consistency Probe

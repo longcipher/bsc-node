@@ -12,8 +12,6 @@ English: [README.md](./README.md)
 
 ## 成员
 
-- `bin/cli-app` —— 示例 CLI（`clap`），演示工作区约定。
-- `crates/common` —— 跨 crate 共享工具库。
 - `bin/bsc-consistency-probe` —— Go vs Rust 一致性探针（详见下节）。
 
 ## 一致性探针
