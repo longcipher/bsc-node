@@ -1,5 +1,5 @@
 [files]
-extend-exclude = ["specs/**"]
+extend-exclude = ["specs/**", "privnet/genesis.json"]
 
 [default.extend-words]
 # BSC-specific terms (false positives otherwise)

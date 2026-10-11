@@ -18,7 +18,7 @@ English: [README.md](./README.md)
 
 ### 背景
 
-Go `bsc` 是 BSC 主网 21 个验证者实际运行的权威客户端；Rust `reth-bsc` 目前定位为实验性、可同步与提供只读 RPC，但尚不能作为出块验证者，且缺少部分最终性相关 API（如 `eth_getFinalizedHeader`），并把 `safe`/`finalized` 标签当作 `latest` 处理。因此，任何把 Rust 节点当作状态源的关键业务（例如 MEV 搜索 / DEX 聚合器用 revm 内联模拟），在信任其数据前都应先与 Go 交叉校验 `stateRoot`。
+Go `bsc` 是 BSC 主网 45 个活跃验证者实际运行的权威客户端；Rust `reth-bsc` 目前定位为实验性、可同步与提供只读 RPC、私有网上可出块（已验证，见下），但主网验证未经证明，且缺少部分最终性相关 API（如 `eth_getFinalizedHeader`），并把 `safe`/`finalized` 标签当作 `latest` 处理。因此，任何把 Rust 节点当作状态源的关键业务（例如 MEV 搜索 / DEX 聚合器用 revm 内联模拟），在信任其数据前都应先与 Go 交叉校验 `stateRoot`。
 
 ### 子命令
 
@@ -71,6 +71,11 @@ BSC 双客户端（Go vs Rust）深度对比分析：
 
 - English: [docs/bsc-diff.md](./docs/bsc-diff.md)
 - 中文: [docs/bsc-diff.zh.md](./docs/bsc-diff.zh.md)
+
+私有网实验（纯 Go / 纯 Rust / 混合）与一键搭建：
+
+- English: [docs/privnet.md](./docs/privnet.md)、[privnet/README.md](./privnet/README.md)
+- 中文: [docs/privnet.zh.md](./docs/privnet.zh.md)、[privnet/](./privnet/README.zh.md)
 
 ## 许可证
 

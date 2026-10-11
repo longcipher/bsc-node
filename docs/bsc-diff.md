@@ -2,27 +2,28 @@
 
 中文版（中文）： [bsc-diff.zh.md](./bsc-diff.zh.md)
 
-> Analysis subjects (local checkout `/Volumes/akext/src/github.com/bnb-chain/`):
+> Analysis subjects:
 >
-> - `bsc/` — Go implementation (a go-ethereum fork; BNB Chain's official, authoritative client)
-> - `reth-bsc/` — Rust implementation (an extension of reth via its `NodeBuilder` API, not a fork)
+> - Go `bnb-chain/bsc` @ `c5533ab5b` (binary reports `v1.8.0-alpha`; built 2026-10-11)
+> - Rust `bnb-chain/reth-bsc` @ `98ef6c5` (`v0.1.2` line; built 2026-10-11)
 >
-> Conclusions are grounded in the source code and each project's own README / CLAUDE.md /
-> CHANGELOG statements (no live network research was available for this pass, but the
-> in-repo statements are authoritative).
+> Conclusions rest on three pillars: source-code reading, **live private-network
+> experiments** (Go-only, Rust-only, and mixed networks; see [privnet.md](./privnet.md)
+> and [`privnet/`](../privnet/)), and **live web research verified on 2026-10-11**
+> (release pages, BSC docs announcements, validator docs).
 
 ---
 
 ## 1. Executive Summary
 
-**A Rust node is fine as a "read-data full node / RPC source", but never as a validator or for anything that hard-depends on finality; for critical work, trust Go or cross-validate the two clients (see the probe crate below).**
+**A Rust node is a usable read-data full node / RPC source and can even produce blocks on a private network (verified), but it is not proven as a mainnet validator; for anything finality-critical, trust Go or cross-validate the two clients (see the probe crate below).**
 
 | Question | Answer |
 |---|---|
-| Are both implementations "fine / production-grade"? | **No.** Go is a battle-tested production client. Rust is officially positioned as **experimental / under active development** and **cannot act as a block-producing validator**. |
-| Can they sync with each other? | **Yes (as full nodes / archive nodes reading the same chain).** The devp2p wire protocol, plus the `bsc/1` and `bsc/2` sub-protocol message codes and RLP encoding, are byte-for-byte identical; Rust has interop tests against Go's reference encoding. |
-| Are they used heavily in production? | Go is the client actually run by BSC mainnet's 21 validators. Rust currently serves **full-node / archive-node / RPC** roles; it is not yet announced for production validation. A Rust node someone gives you ≈ a read/RPC node. |
-| Are RPC / P2P different? | **P2P is near-fully compatible** (Rust mirrors Go's wire format). **RPC namespaces mostly align, but Rust is missing some BSC-specific finality APIs**, and its handling of the `safe`/`finalized` tags differs semantically from Go. |
+| Are both implementations "fine / production-grade"? | **No.** Go is a battle-tested production client. Rust is officially **experimental / under active development**; its block-production code exists and works on private networks (verified, §3), but it is not proven in the mainnet validator set. |
+| Can they sync with each other? | **Yes — verified live.** Private-network tests ran Go-only, Rust-only, and mixed (2+2) topologies to identical hashes/stateRoots; both miner-handover directions work (see [privnet.md](./privnet.md)). The devp2p wire protocol, plus the `bsc/1` and `bsc/2` sub-protocol message codes and RLP encoding, are byte-for-byte identical; Rust has interop tests against Go's reference encoding. |
+| Are they used heavily in production? | Go is the client actually run by BSC mainnet's 45 active validators (21-strong consensus set). Rust currently serves **full-node / archive-node / RPC** roles. A Rust node someone gives you ≈ a read/RPC node. |
+| Are RPC / P2P different? | **P2P is near-fully compatible** (Rust mirrors Go's wire format; measured handshake matrix in [privnet.md](./privnet.md)). **RPC namespaces mostly align, but Rust is missing some BSC-specific finality APIs**, and its handling of the `safe`/`finalized` tags differs semantically from Go. |
 
 ---
 
@@ -34,25 +35,32 @@
 - Full PoSA/Parlia block-production capability: `Prepare` / `Finalize` / `FinalizeAndAssemble` / `Seal` are all implemented (`bsc/consensus/parlia/parlia.go:1154,1401,1510,1723`) — **it can validate and produce blocks**.
 - Mature release process: Stable / Feature / Preview channels (`bsc/README.md:23-28`). Repo HEAD is `v1.8.0-alpha` (a preview tracking geth v1.17.3, `bsc/CHANGELOG.md:3`).
 - Full toolchain: clef, devp2p, abigen, bootnode, evm; complete hardware docs (3TB SSD / 16C / 64G, `bsc/README.md:105-117`).
+- Release posture (verified live 2026-10-11): latest tag `v1.8.0-alpha` is an explicit **preview, not for production**; latest production line is `v1.7.8`. `v1.8.0-alpha` tracks go-ethereum `v1.17.3`. The `authrpc.*` flags are compiled out (`cmd/geth/main.go`) — BSC embeds consensus, there is no beacon Engine API (by design).
 
 #### Rust implementation `bnb-chain/reth-bsc`
 
 - **Not a fork of reth, but an extension built on reth's `NodeBuilder` API** (`reth-bsc/README.md:3`, `reth-bsc/CLAUDE.md:7`). All BSC-specific logic (Parlia, system contracts, PoSA mining, MEV, EVN, precompiles) lives in this repo.
 - Official status table (`reth-bsc/README.md:9-19`):
   - Historical Sync ✅, BSC Pectra Support ✅, Live Sync ✅
-  - **Run as validator ❌ (soon)** ← the key line
-- Disclaimer: **"This project is experimental and under active development. Use at your own risk."** (`reth-bsc/README.md:200`)
+  - **Run as validator ❌ (soon)** ← still printed, but stale: validator-enabling releases shipped (`v0.0.6-beta`, 2025-12-10; latest `v0.1.2`, 2026-08-20 with BEP-675 `mev_sendBidBlock`). No public evidence of mainnet validators running it; the disclaimer ("experimental… use at your own risk") still stands.
 - At the code level, PoSA mining is **already written** (`reth-bsc/src/node/miner/`, `reth-bsc/MINING.md`, `reth-bsc/CLAUDE.md:75` describes the `BscMiner::start` production loop), but its production-readiness is **not yet endorsed** — the code exists, but it has not been production-validated / certified as a validator.
+- **Private-network proof (this repo, [privnet.md](./privnet.md)):** a Rust node mines from genesis, follows over `eth/69`, produces blocks Go accepts (system transactions included), and hands the producer role both ways with Go. Private-net testing found and fixed the blockers (zero-hash initial Status deadlock; system-contract decode panic — the latter is fixed upstream on `develop` too; a review-driven hardening gates custom-chain handling on genesis identity for reused chain ids).
+  Fixes live on [`akfork:fix/fix-privnet`](https://github.com/akfork/reth-bsc/tree/fix/fix-privnet), PR [bnb-chain/reth-bsc#546](https://github.com/bnb-chain/reth-bsc/pull/546); all modes re-verified on both clients' `develop` branches (§10).
 
-**Maturity verdict:** Go is an order of magnitude ahead and is the "only production-validated client". Rust is usable for "full-node / archive-node sync + read RPC"; the validator path is engineered but not yet broadly production-tested.
+**Maturity verdict:** Go is an order of magnitude ahead and is the "only production-validated client". Rust is usable for "full-node / archive-node sync + read RPC" and now demonstrably mines on private networks; mainnet validation remains unproven.
 
 ---
 
 ### 3. Mutual Sync / Consensus Interoperability
 
-**They can sync**, because they read the same chain and run the same consensus and hard forks.
+**They sync — verified live on private networks** ([privnet.md](./privnet.md)):
+Go-only, Rust-only (from genesis), and mixed 2+2 topologies converge to identical
+hashes/stateRoots; user transactions propagate and execute identically in both
+directions; block production hands over both ways.
 
-- **Hard-fork timelines match on both sides:** Ramanujan → Niels → MirrorSync → Bruno → Euler → Gibbs → Nano → Moran → Planck → Luban → Plato → Hertz → Kepler → Feynman → FeynmanFix → HaberFix → Bohr → Pascal → Prague (Pectra) → Lorentz → Maxwell → Fermi.
+- **Hard-fork timelines match on both sides:** Ramanujan → Niels → MirrorSync → Bruno → Euler → Gibbs → Nano → Moran → Planck → Luban → Plato → Hertz → Kepler → Feynman → FeynmanFix → HaberFix → Bohr → Pascal → Prague (Pectra) → Lorentz → Maxwell → Fermi → **Osaka / Mendel → Pasteur → Jenner (qanet-only)** (all activated on schedule: Fermi mainnet 2026-01-14, Osaka/Mendel 2026-04-28, Pasteur 2026-08-25, Jenner qanet 2026-10-05; mainnet/testnet do not schedule Jenner yet).
+  - Go: `bsc/params/config.go`, `bsc/core/systemcontracts/{feynman,planck,luban}/*`
+  - Rust: `reth-bsc/src/hardforks/bsc.rs`, `reth-bsc/src/system_contracts/` (CLAUDE.md:77 lists the same list)
   - Go: `bsc/params/config.go`, `bsc/core/systemcontracts/{feynman,planck,luban}/*`
   - Rust: `reth-bsc/src/hardforks/bsc.rs`, `reth-bsc/src/system_contracts/` (CLAUDE.md:77 lists the same list)
 - **Both consensus engines are Parlia (PoSA)**; both maintain a validator-set snapshot at epoch boundaries (`snapshot.rs`) and implement BLS voting (`vote_pool` / `bls_signer`). Rust deliberately re-implements Go's RNG (`go_rng.rs`) to keep block-ordering deterministic.
@@ -66,9 +74,9 @@
 
 #### 4.1 Underlying devp2p `eth` sub-protocol
 
-- Rust reuses upstream reth's `reth-eth-wire` (i.e. `eth/68`).
-- Go recently (`v1.8.0-alpha`) made **`eth/70` the primary protocol but explicitly "keeps eth/68 for compatibility"** (`bsc/CHANGELOG.md:19`). → For now Rust (eth/68) and Go still handshake and interconnect fine.
-- ⚠️ **Potential future gap:** once Go mainnet fully drops eth/68, Rust must upgrade to eth/70 to keep interconnecting. This is an alignment point to track continuously.
+- Go offers `eth/{70, 68}` (`v1.8.0-alpha` made `eth/70` primary but explicitly "keeps eth/68 for compatibility", `bsc/CHANGELOG.md:19`; `eth/70` carries no `UpgradeStatusMsg`, `bsc/eth/protocols/eth/handshake.go`).
+- The Rust reth fork advertises `eth/{69, 68, 67, 66}` (`LATEST = Eth69`).
+- **Measured negotiation (private-net test):** Rust↔Go settles on **`eth/68`** (Status + `UpgradeStatus` round-trip on both sides — fully compatible); Rust↔Rust settles on **`eth/69`**. No incompatibility observed; Go has announced no `eth/68` removal date, so the "must upgrade to eth/70" point is to track, not an active gap.
 
 #### 4.2 BSC custom `bsc` sub-protocol (byte-for-byte identical)
 
@@ -90,9 +98,9 @@ Rust has a unit test using **Go's RLP encoding as the reference vector** (`proto
 
 - BSC adds an extension message during the eth handshake to tell the peer "whether to disable transaction broadcast" (Enhanced Validator Network).
 - Rust's `upgrade_status.rs` decodes **bytes captured from a real BSC node** (`0bc180` / `0bc2c101`, message id `0x0b`), matching Go's `UpgradeStatusMsg` (`bsc/eth/protocols/eth/handshake.go:88,103`).
-- Note: Rust's `UpgradeStatusExtension.disable_peer_tx_broadcast` is marked **`TODO: support`** (`upgrade_status.rs:56`) — it can decode, but the behavior is not yet fully active; Go already uses it. Rust separately implements EVN via an independent `--evn.enabled` flag (activated only after sync completes and head lag < 30s, CLAUDE.md:91) — a different path to the same goal.
+- Note: Rust's `UpgradeStatusExtension.disable_peer_tx_broadcast` is marked **`TODO: support`** (`upgrade_status.rs:56`): the flag is *sent* (gated on EVN readiness, `handshake.rs:32-36`) and *decoded* from real BSC captures, but the receive side only logs (`handshake.rs:82-85`, peer id still TODO). Go already enforces it. Rust separately implements EVN via an independent `--evn.enabled` flag (activated only after sync completes and head lag < 30s, CLAUDE.md:91) — a different path to the same goal.
 
-**P2P takeaway:** wire protocol is 100% interoperable; Rust is the follower/aligner. The only thing to watch: Go has moved to eth/70 while Rust is still on eth/68 (propped up by Go's backward compatibility).
+**P2P takeaway:** wire protocol is interoperable (verified live, not just by code reading); Rust is the follower/aligner. Negotiation lands on `eth/68` against Go, `eth/69` Rust-to-Rust.
 
 ---
 
@@ -107,29 +115,32 @@ Rust has a unit test using **Go's RLP encoding as the reference vector** (`proto
 | `admin` | ✅ | ✅ (`rpc/admin.rs`) | |
 | `debug` | ✅ rich | ✅ (`rpc/debug_builder.rs`) | |
 | `txpool` | ✅ | ✅ | |
-| `trace` | ✅ | ✅ (listed in README; needs archive node) | |
+| `trace` | Go `debug_trace*` (+ tracers) | ⚠️ `develop` adds OpenEthereum-style `traceBlock*` under `debug` (wired, not exercised here); `main` only lists it | |
 | `parlia` | ✅ `getSnapshot/getValidators/getJustifiedNumber/getFinalizedNumber/...` | ✅ same name/params (`rpc/parlia.rs`, plus `buildAddNodeIDsCall/RemoveNodeIDsCall`) | Rust output matches bsc-erigon/geth shape |
 | `miner` | ✅ (geth built-in + BSC `miner_mev*`/`addBuilder`) | ✅ redefined (`rpc/miner.rs`, covers `miner_setExtra/setGasPrice/setGasLimit`, drops reth's unimplemented defaults) | |
-| `mev` | ✅ (`internal/ethapi/api_mev.go`) | ✅ (`rpc/mev.rs`, bid submission + MEV API) | |
+| `mev` | ✅ (`internal/ethapi/api_mev.go`) | ✅ (`rpc/mev.rs`, bid submission + MEV API; `mev_sendBidBlock` since v0.1.2) | |
+| `eth_createAccessList` | ✅ | ⚠️ wired on `develop`, rejects pre-London types on chains without London (observed) | |
 | `blob` | via `eth_getBlobSidecars` etc. | ✅ (`rpc/blob.rs` reads blobs from pool/provider) | |
 | `eth_health` / `eth_coinbase` | Go has `eth_health`; geth provides `eth_coinbase` | ✅ `eth_ext.rs` explicitly implements `eth_coinbase` + `eth_health` | Rust removes reth's default empty impl first, then registers (`main.rs:499-500`) |
 
 #### 5.2 Rust's missing / caution-worthy BSC-specific APIs (important)
 
-Confirmed by code search: Rust has **no** the following Go-documented, finality-related methods (no match in `reth-bsc/src`):
+Confirmed by code search **and** live-API checks: Rust has **none** of the following Go-documented methods (no match in `reth-bsc/src`):
 
 - `eth_getFinalizedHeader`
 - `eth_getFinalizedBlock`
 - `eth_newFinalizedHeaderFilter`
 - `eth_getHeaderByNumber` support for the `"finalized"` tag
+- `eth_getTransactionsByBlockNumber` (server: `bsc/internal/ethapi/api.go:2060`)
+- `eth_getTransactionDataAndReceipt` (server: `bsc/internal/ethapi/api.go:2228`)
 
-Go also has `eth_getTransactionsByBlockNumber`, `eth_getTransactionDataAndReceipt`, `eth_getBlobSidecarByTxHash`, etc., which need to be checked one by one against Rust (`eth_getBlobSidecars` should already exist; the finalized series is most likely missing).
+(`eth_getBlobSidecars` / `eth_getBlobSidecarByTxHash` do exist on both sides.)
 
 **Impact:** any workflow that depends on BSC **finality proofs** (cross-chain bridges, IBC / light clients, relayers) cannot get a finalized head/block from a Rust node — it must use Go.
 
 #### 5.3 Subtle semantic differences
 
-- `parlia_getSnapshot` etc.: Go uses `*rpc.BlockNumber` (supports `safe`/`finalized` tags); Rust takes a string and **treats both `safe` and `finalized` as `latest`** (`parlia.rs:195-204`) — the call may return a different height.
+- `parlia_getSnapshot` etc.: Go uses `*rpc.BlockNumber` (supports `safe`/`finalized` tags); Rust took a string and **treated both `safe` and `finalized` as `latest`** (`parlia.rs:195-204` on `main`). **On `develop` this is fixed**: `safe`/`finalized` resolve through the new `rpc/finality.rs` from the provider's real canonical safe/finalized pointers (verified live: `parlia_getValidators`/`getFinalizedNumber` answer; pre-Luban chains report 0, as there are no votes yet).
 - `parlia_getFinalizedNumber`: Go returns `Attestation.SourceNumber` (`api.go:114`); Rust returns `snapshot.get_finalized_number()` (`parlia.rs:405`) — assuming the snapshot structure is identical, the two should be equivalent, but the tag-handling difference changes the input block, hence the result.
 
 ---
@@ -140,24 +151,25 @@ Go also has `eth_getTransactionsByBlockNumber`, `eth_getTransactionDataAndReceip
 |---|---|---|---|
 | Full-node sync | ✅ production | ✅ (synced to mainnet tip; README cites ~10.6T disk) | |
 | Archive node | ✅ | ✅ | |
-| Snapshot sync | ✅ mature | ✅ (reth snapshot from bsc-snapshots) | |
-| Block production / validator | ✅ **production validator** | ⚠️ code exists but not endorsed (❌ soon) | key gap |
+| Snapshot sync | ✅ mature (`snap/1`) | ❌ no snap protocol (DB-snapshot bootstrap + staged/live sync instead) | corrected: earlier doc implied parity |
+| Block production / validator | ✅ **production validator** | ✅ works on private nets (verified, [privnet.md](./privnet.md)); not proven on mainnet, README still marks ❌ | was "code exists but not endorsed" — now tested |
 | EVM equivalence | ✅ | ✅ (runs EEST) | |
 | System contracts / precompiles (BLS, CometBFT light client, IAVL…) | ✅ | ✅ (`src/evm/precompiles/*`) | |
-| MEV / bid | ✅ production | ✅ (in progress) | |
+| MEV / bid | ✅ production | ✅ (`mev_sendBidBlock` since v0.1.2) | |
 | BLS voting / double-sign detection | ✅ | ✅ | |
-| EVN (validator network) | ✅ | ⚠️ partial (decodes handshake, disable flag TODO; separate EVN impl also present) | |
-| Light node (LES) | Go has legacy light | ❌ reth has no LES | |
+| EVN (validator network) | ✅ | ⚠️ partial (flag sent EVN-gated, receive side logs only; separate EVN impl also present) | |
+| Light node (LES) | ❌ (no `les/` in tree) | ❌ reth has no LES | corrected: neither supports light sync |
 | Metrics | ✅ `:6060/metrics` | ✅ `--metrics 0.0.0.0:6060/metrics` | |
 
 ---
 
 ### 7. Production Status & Risk
 
-1. **Who runs in production:** BSC mainnet's 21 validators run Go `geth-bsc` (years without incident). Rust nodes appear in read-only / infrastructure roles like "someone else's RPC node", not in block production.
+1. **Who runs in production:** BSC mainnet's 45 active validators (21-strong consensus set) run Go `geth-bsc`. Rust nodes appear in read-only / infrastructure roles, not in block production; no public evidence of mainnet validators running Rust.
 2. **Risk of using a Rust node as an RPC source:** it is a young implementation; even though EVM equivalence is covered by EEST, extreme edge-case consensus divergence is still possible → it may return blocks / state **inconsistent with Go**; it lacks the finalized API series; and the official disclaimer says "use at your own risk".
-3. **Risk of using Rust as a validator:** currently unsupported by the project, and not battle-tested by the 21-validator set.
-4. **Verified interop points:** `bsc/1`, `bsc/2` message codes and RLP are byte-for-byte identical (Rust has a real captured-byte comparison test); eth/68 currently interconnects (propped up by Go's backward compatibility).
+   Private-net testing additionally found and fixed two consensus-adjacent bugs (Status-head deadlock, epoch-boundary decode panic — the latter is fixed upstream on `develop` too) — fixed code paths should be re-verified on mainnet data before trusting them there.
+3. **Risk of using Rust as a validator:** the code mines correctly on private networks (verified), but mainnet validation is unproven and the project still marks it ❌.
+4. **Verified interop points:** `bsc/1`, `bsc/2` message codes and RLP are byte-for-byte identical (Rust has a real captured-byte comparison test); `eth/68` interconnects against Go and `eth/69` Rust-to-Rust (measured live, [privnet.md](./privnet.md)); same-height hashes/stateRoots match across clients including user transactions.
 
 ---
 
@@ -193,8 +205,9 @@ Your architecture: you use revm **in your own process** to sync BSC block state 
 
 ### 9. Conclusion
 
-- The two implementations are **not "both fine / both production-grade"**: Go is production-grade and produces blocks; Rust is experimental, can sync and serve read RPC, but **cannot be a validator**.
-- **They can sync with each other:** same underlying chain, consensus, and hard forks; the P2P wire protocol (including BSC's custom sub-protocol) is strictly mirrored by Rust, and interop is covered by real captured-byte tests.
-- **RPC mostly aligns**, but Rust is missing BSC's finalized/finality APIs and handles `safe`/`finalized` tags differently from Go — for finality-sensitive work, use Go.
-- A Rust node someone gives you = a **usable read / RPC full node**, good for redundancy and comparison, **not fit as an authoritative source or for anything finality-/block-production-related**.
+- The two implementations are **not "both fine / both production-grade"**: Go is production-grade and produces blocks; Rust is experimental but now demonstrably mines and syncs on private networks — mainnet validation remains unproven.
+- **They sync with each other — verified live:** same underlying chain, consensus, and hard forks; the P2P wire protocol (including BSC's custom sub-protocol) is strictly mirrored by Rust, covered by captured-byte tests **and** by end-to-end private-network runs (Go-only, Rust-only, mixed, miner handovers both ways).
+- **RPC mostly aligns**, but Rust is missing BSC's finalized/finality APIs (plus `eth_getTransactionsByBlockNumber` / `eth_getTransactionDataAndReceipt`) and handles `safe`/`finalized` tags differently from Go — for finality-sensitive work, use Go.
+- A Rust node someone gives you = a **usable read / RPC full node** (and a workable private-net validator), good for redundancy and comparison, **not fit as a mainnet authoritative source or mainnet validator**.
 - For your MEV / DEX-aggregator scenario: **Go archive node as primary state source, Rust archive as redundancy/compare source, run the probe for state-root consistency before every production use**; finalized/head decisions go to Go only.
+- To reproduce all of the above: [`privnet/`](../privnet/) one-script private networks; full process and results in [privnet.md](./privnet.md).

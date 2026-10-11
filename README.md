@@ -20,7 +20,7 @@ The workspace uses a Cargo workspace layout: executable crates live under `bin/*
 
 ### Background
 
-Go `bsc` is the authoritative client actually run by BSC mainnet's 21 validators; Rust `reth-bsc` is currently experimental—it can sync and serve read RPC, but cannot act as a block-producing validator, lacks some finality APIs (e.g. `eth_getFinalizedHeader`), and treats the `safe`/`finalized` tags as `latest`.
+Go `bsc` is the authoritative client actually run by BSC mainnet's 45 active validators; Rust `reth-bsc` is currently experimental—it syncs and serves read RPC, mines on private networks (verified, see below), but is unproven as a mainnet validator, lacks some finality APIs (e.g. `eth_getFinalizedHeader`), and treats the `safe`/`finalized` tags as `latest`.
 
 Therefore, any critical workload that trusts a Rust node as a state source (e.g. a MEV searcher / DEX aggregator running in-process revm simulation) should cross-validate the `stateRoot` against Go before trusting its data.
 
@@ -75,6 +75,11 @@ In-depth BSC dual-client (Go vs Rust) analysis:
 
 - English: [docs/bsc-diff.md](./docs/bsc-diff.md)
 - 中文: [docs/bsc-diff.zh.md](./docs/bsc-diff.zh.md)
+
+Private-network experiments (Go-only / Rust-only / mixed) and one-script setup:
+
+- English: [docs/privnet.md](./docs/privnet.md), [privnet/README.md](./privnet/README.md)
+- 中文: [docs/privnet.zh.md](./docs/privnet.zh.md), [privnet/](./privnet/README.zh.md)
 
 ## License
 

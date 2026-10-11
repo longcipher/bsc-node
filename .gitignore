@@ -30,6 +30,9 @@ bun.lockb
 .env.local
 .env.*.local
 
+# BSC private networks (runtime chain data, keystores, node keys)
+privnet/data/
+
 # Leptos
 /site/
 .rumdl_cache/

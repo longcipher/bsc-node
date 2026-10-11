@@ -67,6 +67,34 @@ probe-truth GO_RPC="https://bsc-mainnet.bnbchain.org" BLOCK="latest" STORAGE_SLO
   cargo run -q -p bsc-consistency-probe -- truth \
     --go {{GO_RPC}} --block {{BLOCK}} --storage-slots {{STORAGE_SLOTS}}
 
+# ============================================================
+# BSC Private Networks (privnet/)
+# ============================================================
+
+# Start a private network: MODE is go, rust, or mixed (binaries via GETH_BIN / RETH_BIN or PATH).
+privnet MODE="mixed":
+  ./privnet/privnet.sh {{MODE}}
+
+# Show block height / peer count of a running private network.
+privnet-status:
+  ./privnet/privnet.sh status
+
+# Hand the block producer role to rust1 (mixed mode).
+privnet-handover-to-rust:
+  ./privnet/privnet.sh handover-to-rust
+
+# Hand the block producer role back to go1 (mixed mode).
+privnet-handover-to-go:
+  ./privnet/privnet.sh handover-to-go
+
+# Stop a running private network.
+privnet-stop:
+  ./privnet/privnet.sh stop
+
+# Stop and wipe private-network chain data.
+privnet-clean:
+  ./privnet/privnet.sh clean
+
 # Publish all crates to crates.io (dry run)
 publish-check:
   cargo publish --workspace --dry-run --allow-dirty
