@@ -34,7 +34,8 @@ mutation:
 
 # Run tests with coverage
 test-coverage:
-  cargo llvm-cov --all-features --workspace --output-dir coverage
+  mkdir -p coverage
+  cargo llvm-cov --all-features --workspace --lcov --output-path coverage/lcov.info
 
 # Build entire workspace
 build:

@@ -7,7 +7,10 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "TODO"
+repository = "https://github.com/longcipher/bsc-node"
+description = "BSC dual-client consistency probe: cross-validate Go geth-bsc against Rust reth-bsc and cryptographically verify state via MPT proofs"
+keywords = ["bsc", "bnb-chain", "reth", "geth", "consistency", "merkle-patricia-trie"]
+categories = ["command-line-utilities", "cryptography"]
 
 [workspace.dependencies]
 clap = "4.6.7"

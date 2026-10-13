@@ -6,6 +6,9 @@ Cargo.lock
 mutants.out/
 mutants.out.old/
 
+# Coverage (cargo-llvm-cov)
+/coverage/
+
 # IDE
 .idea/
 .vscode/

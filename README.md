@@ -10,7 +10,7 @@ The workspace follows strict Rust conventions (edition 2024, `eyre`, `tracing`, 
 
 ## Workspace Layout
 
-The workspace uses a Cargo workspace layout: executable crates live under `bin/*`, reusable libraries under `crates/*`, and the root `Cargo.toml` aggregates them via `members = ["bin/*", "crates/*"]` while centralizing shared dependencies in the root `[workspace.dependencies]`.
+The workspace uses a Cargo workspace layout: executable crates live under `bin/*`, and the root `Cargo.toml` aggregates them via `members = ["bin/*"]` while centralizing shared dependencies in the root `[workspace.dependencies]`. Reusable libraries would go under `crates/*`, which the members list is reserved for.
 
 ## Crates
 

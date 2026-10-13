@@ -42,6 +42,9 @@ jobs:
 
       - run: just ci
 
+      - name: Generate coverage
+        run: just test-coverage
+
       - name: Upload coverage reports
         uses: codecov/codecov-action@v5
         with:

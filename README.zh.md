@@ -8,7 +8,7 @@ English: [README.md](./README.md)
 
 ## 工作区结构
 
-工作区采用 Cargo workspace 布局：可执行程序放在 `bin/*`，可复用库放在 `crates/*`，根 `Cargo.toml` 通过 `members = ["bin/*", "crates/*"]` 聚合并统一管理共享依赖（根 `[workspace.dependencies]`）。
+工作区采用 Cargo workspace 布局：可执行程序放在 `bin/*`，根 `Cargo.toml` 通过 `members = ["bin/*"]` 聚合并统一管理共享依赖（根 `[workspace.dependencies]`）。可复用库应放在 `crates/*`，`members` 已为其预留位置。
 
 ## 成员
 
