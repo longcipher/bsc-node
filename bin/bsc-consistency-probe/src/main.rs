@@ -546,11 +546,18 @@ fn cross_check(report: &serde_json::Map<String, Value>, go_name: &str, rust_name
         if ga != ra {
             return false;
         }
-        if g.get("error").is_some() || r.get("error").is_some() {
-            if g.get("error") != r.get("error") {
-                return false;
+        // Two clients agree either by verifying the same values, or by
+        // failing the same way. A failure on only one side is never
+        // agreement, because a failure is not a value: it just means the
+        // other client had something to verify and this one did not.
+        match (g.get("error"), r.get("error")) {
+            (None, None) => {}
+            (g_error, r_error) => {
+                if g_error != r_error {
+                    return false;
+                }
+                continue;
             }
-            continue;
         }
         for f in ["balance", "nonce", "storageRoot", "codeHash"] {
             if g.pointer(&format!("/account/{f}")) != r.pointer(&format!("/account/{f}")) {
@@ -909,6 +916,33 @@ mod tests {
         // not a disagreement about state.
         let e = json!({ "address": ADDR_A, "error": "boom" });
         assert!(cross_check(&two_way(vec![e.clone()], vec![e]), "go", "rust"));
+    }
+
+    #[test]
+    fn cross_check_cleared_errors_fall_through_to_value_comparison() {
+        // Neither side reported an error, so the values themselves decide.
+        // This is what separates "both failed the same way" from "neither side
+        // failed": only the former may short-circuit, and the value comparison
+        // must still run in the latter.
+        let ok = verified_address_json(ADDR_A, "0x10", "0x2", "0xsr", "0xch");
+        assert!(cross_check(&two_way(vec![ok.clone()], vec![ok.clone()]), "go", "rust"));
+
+        let mut differing = ok.clone();
+        differing["slots"][0]["present"] = json!(false);
+        assert!(!cross_check(&two_way(vec![ok], vec![differing]), "go", "rust"));
+    }
+
+    #[test]
+    fn cross_check_treats_a_one_sided_failure_as_disagreement() {
+        // The guard is on either side failing, not on both: a client that
+        // cannot verify an address has not agreed with one that can.
+        let go_failed = json!({ "address": ADDR_A, "error": "boom" });
+        let rust_verified = verified_address_json(ADDR_A, "0x10", "0x2", "0xsr", "0xch");
+        assert!(!cross_check(&two_way(vec![go_failed], vec![rust_verified]), "go", "rust"));
+
+        let rust_failed = json!({ "address": ADDR_A, "error": "boom" });
+        let go_verified = verified_address_json(ADDR_A, "0x10", "0x2", "0xsr", "0xch");
+        assert!(!cross_check(&two_way(vec![go_verified], vec![rust_failed]), "go", "rust"));
     }
 
     #[test]

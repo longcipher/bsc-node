@@ -1,16 +1,15 @@
 # Mutation testing configuration for cargo-mutants.
 #
-# Binary crate entry points (e.g. `fn main`) cannot be exercised by unit
-# tests, so their injected mutants would always survive. Keep mutation
-# focused on library crates where the domain logic lives.
-exclude_globs = ["bin/*/src/**"]
+# This workspace has no library crates, so every test is a `#[cfg(test)]` unit
+# test compiled into the bin crate's test binary. That makes the protocol, MPT
+# and RPC logic just as mutable as it would be in a lib crate, so nothing is
+# excluded wholesale: the only function here that no test can drive is `fn
+# main`, and cargo-mutants reports that one survivor directly.
+#
+# Note that `exclude_globs` would defeat the whole exercise — an earlier
+# version of this file carried `exclude_globs = ["bin/*/src/**"]`, which
+# excluded every source file in the workspace and quietly turned 168 mutants
+# into zero.
 
-[mutants]
-# Number of threads to use for mutation testing
-test_threads = "num-cpus"
-
-# Show surviving mutants in output
-show_survivors = true
-
-# Show mutation scores in output
-show_scores = true
+# `Vec::with_capacity` sizing is a performance hint, not behaviour.
+skip_calls = ["with_capacity"]
