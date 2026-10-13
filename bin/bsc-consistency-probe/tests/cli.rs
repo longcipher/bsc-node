@@ -409,6 +409,55 @@ fn compare_reports_a_failed_probe_for_every_block_it_was_asked_to_check() {
     }
 }
 
+#[test]
+fn compare_fails_fast_when_an_endpoint_never_answers() {
+    // A probe run as a gate cannot wait forever: a wedged endpoint or a
+    // black-holing path must produce a failure and a non-zero exit.
+    let hanging = TcpListener::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let dead = hanging.local_addr().unwrap();
+    // Accept every connection and never answer it.
+    thread::spawn(move || {
+        let mut held = Vec::new();
+        while let Ok((stream, _)) = hanging.accept() {
+            held.push(stream);
+        }
+    });
+
+    let start = std::time::Instant::now();
+    let out = run(&[
+        "compare",
+        "--go",
+        &format!("http://{dead}"),
+        "--rust",
+        &format!("http://{dead}"),
+        "--start",
+        "100",
+        "--end",
+        "103",
+        "--workers",
+        "4",
+        "--timeout-ms",
+        "300",
+    ]);
+    let elapsed = start.elapsed();
+
+    assert!(out.status.code() == Some(1), "exit: {:?}", out.status);
+    // Bounded by the timeout, not by patience. The generous ceiling leaves
+    // room for a slow CI machine while still catching a run that hangs.
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "took {elapsed:?}, which means the timeout is not bounding the run"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("4 block(s) inconsistent"), "unexpected stderr: {stderr}");
+    // Every height must still be reported, not silently dropped.
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("timed out"), "unexpected stdout: {stdout}");
+    for height in ["#100:", "#101:", "#102:", "#103:"] {
+        assert!(stdout.contains(height), "missing {height} in: {stdout}");
+    }
+}
+
 // ----------------------------------------------------------------------
 // truth
 // ----------------------------------------------------------------------

@@ -248,6 +248,14 @@ pub fn parse_slot_list(s: &str) -> Result<Vec<U256>> {
 
 #[cfg(test)]
 mod tests {
+    /// A client for a test endpoint, on the default timeout.
+    ///
+    /// Tests almost always want the default, so they state it once here rather
+    /// than at each of the dozens of call sites.
+    fn client(url: &str) -> RpcClient {
+        RpcClient::with_timeout_ms(url, crate::rpc::DEFAULT_TIMEOUT_MS)
+    }
+
     use primitive_types::H160;
     use proptest::prelude::*;
     use serde_json::{Value, json};
@@ -548,7 +556,7 @@ mod tests {
         let slots = case_slots(&case);
 
         let server = MockRpc::start(vec![("eth_getProof", case["response"].clone())]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let got = verify_address(&client, root, address, &slots, &block).await.unwrap();
         let account = got.account.expect("USDT must be present under its state root");
@@ -585,7 +593,7 @@ mod tests {
         let address = address_of(case["address"].as_str().unwrap());
 
         let server = MockRpc::start(vec![("eth_getProof", case["response"].clone())]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
         verify_address(&client, root, address, &[U256::zero(), U256::one()], &block).await.unwrap();
 
         let req = server.only_request();
@@ -603,7 +611,7 @@ mod tests {
         let address = address_of(case["address"].as_str().unwrap());
 
         let server = MockRpc::start(vec![("eth_getProof", case["response"].clone())]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let got = verify_address(&client, root, address, &[U256::zero()], &block).await.unwrap();
         let account = got.account.expect("account must be present");
@@ -621,7 +629,7 @@ mod tests {
         let address = address_of(case["address"].as_str().unwrap());
 
         let server = MockRpc::start(vec![("eth_getProof", case["response"].clone())]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         // The same proof under a different claimed root: nothing may verify.
         let err = verify_address(&client, H256::repeat_byte(0x7f), address, &[], &block)
@@ -640,7 +648,7 @@ mod tests {
         let mut tampered = case["response"].clone();
         tampered["storageHash"] = Value::String(format!("0x{}", "ab".repeat(32)));
         let server = MockRpc::start(vec![("eth_getProof", tampered)]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let err = verify_address(&client, root, address, &[], &block).await.unwrap_err();
         assert!(err.to_string().contains("storageHash mismatch"), "unexpected: {err}");
@@ -655,7 +663,7 @@ mod tests {
         let mut response = case["response"].clone();
         response["storageHash"] = Value::String("0xdeadbeef".into());
         let server = MockRpc::start(vec![("eth_getProof", response)]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         assert!(verify_address(&client, root, address, &[], &block).await.is_ok());
     }
@@ -667,7 +675,7 @@ mod tests {
         // Drop a proof node so the account leaf can no longer be reached.
         response["accountProof"] = json!(["0xdeadbeef"]);
         let server = MockRpc::start(vec![("eth_getProof", response)]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let address = address_of(case["address"].as_str().unwrap());
         assert!(verify_address(&client, root, address, &[], &block).await.is_err());
@@ -685,7 +693,7 @@ mod tests {
             ("eth_getBlockByNumber", json!({ "stateRoot": f["state_root"] })),
         ])
         .await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let (height, root) = resolve_block(&client, "latest").await.unwrap();
         assert_eq!(format!("0x{height:x}"), f["block"].as_str().unwrap());
@@ -699,7 +707,7 @@ mod tests {
         let server =
             MockRpc::start(vec![("eth_getBlockByNumber", json!({ "stateRoot": f["state_root"] }))])
                 .await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let (height, _) = resolve_block(&client, block).await.unwrap();
         assert_eq!(format!("0x{height:x}"), block);
@@ -717,7 +725,7 @@ mod tests {
             ("eth_getBlockByNumber", json!({ "stateRoot": f["state_root"] })),
         ])
         .await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         // `pending` and friends are not hex, so the head is used.
         let (height, _) = resolve_block(&client, "pending").await.unwrap();
@@ -728,7 +736,7 @@ mod tests {
     async fn block_state_root_rejects_missing_field() {
         let server =
             MockRpc::start(vec![("eth_getBlockByNumber", json!({ "number": "0x1" }))]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let err = block_state_root(&client, "latest").await.unwrap_err();
         assert!(err.to_string().contains("missing stateRoot"), "unexpected: {err}");
@@ -738,7 +746,7 @@ mod tests {
     async fn block_state_root_rejects_wrong_length_root() {
         let server =
             MockRpc::start(vec![("eth_getBlockByNumber", json!({ "stateRoot": "0xab" }))]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let err = block_state_root(&client, "latest").await.unwrap_err();
         assert!(err.to_string().contains("bad stateRoot length"), "unexpected: {err}");
@@ -747,7 +755,7 @@ mod tests {
     #[tokio::test]
     async fn block_state_root_errors_on_null_block() {
         let server = MockRpc::start(vec![("eth_getBlockByNumber", Value::Null)]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         assert!(block_state_root(&client, "999999999").await.is_err());
     }

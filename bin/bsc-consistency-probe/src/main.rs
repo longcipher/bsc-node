@@ -81,6 +81,12 @@ enum Cmd {
         /// range consumes.
         #[arg(long, default_value_t = 8)]
         workers: usize,
+        /// Per-request timeout in milliseconds.
+        ///
+        /// Covers the whole exchange, so an endpoint that accepts a connection
+        /// and then goes quiet fails the block instead of hanging the run.
+        #[arg(long, default_value_t = crate::rpc::DEFAULT_TIMEOUT_MS)]
+        timeout_ms: u64,
         /// Also compare `eth_getBlockReceipts`.
         #[arg(long)]
         receipts: bool,
@@ -114,6 +120,12 @@ enum Cmd {
         /// Emit machine-readable JSON instead of a table.
         #[arg(long)]
         json: bool,
+        /// Per-request timeout in milliseconds.
+        ///
+        /// Covers the whole exchange, so an endpoint that accepts a connection
+        /// and then goes quiet fails this run instead of hanging it.
+        #[arg(long, default_value_t = crate::rpc::DEFAULT_TIMEOUT_MS)]
+        timeout_ms: u64,
     },
 }
 
@@ -125,14 +137,14 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Compare { go, rust, start, end, blocks, workers, receipts, json } => {
-            let go = RpcClient::new(&go);
-            let rust = RpcClient::new(&rust);
+        Cmd::Compare { go, rust, start, end, blocks, workers, timeout_ms, receipts, json } => {
+            let go = RpcClient::with_timeout_ms(&go, timeout_ms);
+            let rust = RpcClient::with_timeout_ms(&rust, timeout_ms);
             let heights = resolve_heights(&go, start, end, blocks).await?;
             run_compare(&go, &rust, &heights, workers, receipts, json).await
         }
-        Cmd::Truth { go, rust, endpoint, block, addresses, storage_slots, json } => {
-            run_truth(go, rust, endpoint, &block, addresses, &storage_slots, json).await
+        Cmd::Truth { go, rust, endpoint, block, addresses, storage_slots, timeout_ms, json } => {
+            run_truth(go, rust, endpoint, timeout_ms, &block, addresses, &storage_slots, json).await
         }
     }
 }
@@ -425,6 +437,7 @@ async fn run_truth(
     go: Option<String>,
     rust: Option<String>,
     endpoint: Option<String>,
+    timeout_ms: u64,
     block: &str,
     addresses: Option<String>,
     storage_slots: &str,
@@ -437,14 +450,14 @@ async fn run_truth(
     let slots = parse_slot_list(storage_slots)?;
 
     let endpoints: Vec<(String, RpcClient)> = if let Some(ep) = endpoint {
-        vec![("endpoint".to_string(), RpcClient::new(&ep))]
+        vec![("endpoint".to_string(), RpcClient::with_timeout_ms(&ep, timeout_ms))]
     } else {
         let mut v = Vec::new();
         if let Some(g) = go.clone() {
-            v.push(("go".to_string(), RpcClient::new(&g)));
+            v.push(("go".to_string(), RpcClient::with_timeout_ms(&g, timeout_ms)));
         }
         if let Some(r) = rust.clone() {
-            v.push(("rust".to_string(), RpcClient::new(&r)));
+            v.push(("rust".to_string(), RpcClient::with_timeout_ms(&r, timeout_ms)));
         }
         if v.is_empty() {
             return Err(eyre!("provide --endpoint, or --go and/or --rust"));
@@ -573,6 +586,14 @@ fn cross_check(report: &serde_json::Map<String, Value>, go_name: &str, rust_name
 
 #[cfg(test)]
 mod tests {
+    /// A client for a test endpoint, on the default timeout.
+    ///
+    /// Tests almost always want the default, so they state it once here rather
+    /// than at each of the dozens of call sites.
+    fn client(url: &str) -> RpcClient {
+        RpcClient::with_timeout_ms(url, crate::rpc::DEFAULT_TIMEOUT_MS)
+    }
+
     use serde_json::{Map, Value, json};
 
     use super::*;
@@ -998,9 +1019,7 @@ mod tests {
         let rust = MockRpc::start(go_routes("0x64", "0xabc", 100)).await;
 
         let result =
-            probe_block(&RpcClient::new(&go.url()), &RpcClient::new(&rust.url()), 100, false)
-                .await
-                .unwrap();
+            probe_block(&client(&go.url()), &client(&rust.url()), 100, false).await.unwrap();
 
         assert_eq!(result.number, 100);
         assert!(result.state_root_match);
@@ -1014,9 +1033,7 @@ mod tests {
         let rust = MockRpc::start(go_routes("0x64", "0xbbb", 100)).await;
 
         let result =
-            probe_block(&RpcClient::new(&go.url()), &RpcClient::new(&rust.url()), 100, false)
-                .await
-                .unwrap();
+            probe_block(&client(&go.url()), &client(&rust.url()), 100, false).await.unwrap();
 
         assert!(!result.state_root_match);
         assert!(!result.ok);
@@ -1032,14 +1049,9 @@ mod tests {
         drop(listener);
 
         assert!(
-            probe_block(
-                &RpcClient::new(&go.url()),
-                &RpcClient::new(&format!("http://{dead}")),
-                100,
-                false
-            )
-            .await
-            .is_err()
+            probe_block(&client(&go.url()), &client(&format!("http://{dead}")), 100, false)
+                .await
+                .is_err()
         );
     }
 
@@ -1050,15 +1062,7 @@ mod tests {
         heights: &[u64],
         workers: usize,
     ) -> Result<()> {
-        run_compare(
-            &RpcClient::new(&go.url()),
-            &RpcClient::new(&rust.url()),
-            heights,
-            workers,
-            false,
-            false,
-        )
-        .await
+        run_compare(&client(&go.url()), &client(&rust.url()), heights, workers, false, false).await
     }
 
     #[tokio::test]
@@ -1085,9 +1089,8 @@ mod tests {
         let go = MockRpc::start(go_routes("0x65", "0xabc", 101)).await;
         let _rust = MockRpc::start(go_routes("0x65", "0xabc", 101)).await;
 
-        let heights = resolve_heights(&RpcClient::new(&go.url()), None, None, 2)
-            .await
-            .expect("window must resolve");
+        let heights =
+            resolve_heights(&client(&go.url()), None, None, 2).await.expect("window must resolve");
         assert_eq!(heights, vec![100, 101]);
         assert!(go.requests().iter().any(|r| r["method"] == "eth_blockNumber"));
     }
@@ -1098,15 +1101,8 @@ mod tests {
         let go = MockRpc::start(routes.clone()).await;
         let rust = MockRpc::start(routes).await;
 
-        let outcome = run_compare(
-            &RpcClient::new(&go.url()),
-            &RpcClient::new(&rust.url()),
-            &[100],
-            1,
-            false,
-            true,
-        )
-        .await;
+        let outcome =
+            run_compare(&client(&go.url()), &client(&rust.url()), &[100], 1, false, true).await;
         // The JSON path must not change the pass/fail outcome.
         assert!(outcome.is_ok());
     }
@@ -1117,16 +1113,9 @@ mod tests {
         let go = MockRpc::start(routes.clone()).await;
         let rust = MockRpc::start(routes).await;
 
-        run_compare(
-            &RpcClient::new(&go.url()),
-            &RpcClient::new(&rust.url()),
-            &[100],
-            1,
-            false,
-            true,
-        )
-        .await
-        .unwrap();
+        run_compare(&client(&go.url()), &client(&rust.url()), &[100], 1, false, true)
+            .await
+            .unwrap();
 
         // Re-derive the summary the command prints so the shape is pinned.
         let summary = json!({
@@ -1155,7 +1144,7 @@ mod tests {
     async fn resolve_heights_takes_an_explicit_inclusive_range() {
         // An explicit pair must not touch the endpoint at all.
         let server = MockRpc::start(vec![("eth_blockNumber", json!("0xff"))]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let heights = resolve_heights(&client, Some(100), Some(103), 20).await.unwrap();
         assert_eq!(heights, vec![100, 101, 102, 103]);
@@ -1165,7 +1154,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_heights_accepts_a_single_block_range() {
         let server = MockRpc::start(vec![]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         assert_eq!(resolve_heights(&client, Some(7), Some(7), 20).await.unwrap(), vec![7]);
     }
@@ -1174,7 +1163,7 @@ mod tests {
     async fn resolve_heights_rejects_an_inverted_range() {
         // Probing nothing and reporting "0/0 consistent" reads like a pass.
         let server = MockRpc::start(vec![]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         let err = resolve_heights(&client, Some(103), Some(100), 20).await.unwrap_err();
         assert!(err.to_string().contains("above"), "unexpected: {err}");
@@ -1183,7 +1172,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_heights_windows_recent_blocks_from_the_head() {
         let server = MockRpc::start(vec![("eth_blockNumber", json!("0x65"))]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         assert_eq!(resolve_heights(&client, None, None, 2).await.unwrap(), vec![100, 101]);
         assert_eq!(resolve_heights(&client, None, None, 3).await.unwrap(), vec![99, 100, 101]);
@@ -1193,7 +1182,7 @@ mod tests {
     async fn resolve_heights_clamps_the_window_at_genesis() {
         // A head below the window size must not underflow to u64::MAX.
         let server = MockRpc::start(vec![("eth_blockNumber", json!("0x1"))]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         assert_eq!(resolve_heights(&client, None, None, 20).await.unwrap(), vec![0, 1]);
     }
@@ -1202,7 +1191,7 @@ mod tests {
     async fn resolve_heights_reads_zero_blocks_as_the_head_alone() {
         // `--blocks 0` would underflow `blocks - 1`.
         let server = MockRpc::start(vec![("eth_blockNumber", json!("0x65"))]).await;
-        let client = RpcClient::new(&server.url());
+        let client = client(&server.url());
 
         assert_eq!(resolve_heights(&client, None, None, 0).await.unwrap(), vec![101]);
     }
@@ -1213,9 +1202,8 @@ mod tests {
         let dead = listener.local_addr().unwrap();
         drop(listener);
 
-        let err = resolve_heights(&RpcClient::new(&format!("http://{dead}")), None, None, 4)
-            .await
-            .unwrap_err();
+        let err =
+            resolve_heights(&client(&format!("http://{dead}")), None, None, 4).await.unwrap_err();
         assert!(err.to_string().contains("failed"), "unexpected: {err}");
     }
 
@@ -1375,8 +1363,8 @@ mod tests {
         drop(listener);
 
         let err = run_compare(
-            &RpcClient::new(&go.url()),
-            &RpcClient::new(&format!("http://{dead}")),
+            &client(&go.url()),
+            &client(&format!("http://{dead}")),
             &[100, 101, 102],
             2,
             false,

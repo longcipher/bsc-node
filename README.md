@@ -34,6 +34,7 @@ Therefore, any critical workload that trusts a Rust node as a state source (e.g.
 - `compare` probes `--workers` heights at a time (default 8). One block probe issues four JSON-RPC calls, so this is what bounds how much of a public endpoint's capacity a wide `--start..--end` range consumes. Results are reported in ascending height order regardless of which endpoint answers first.
 - A height whose probe fails is reported as a diff on its own row rather than silently dropping out of the range, because dropping it would understate the failures the caller asked about.
 - Any inconsistent or unprobeable block makes the exit status non-zero, so `compare` is usable directly as a CI gate. A summary line always prints first.
+- Every request is bounded by `--timeout-ms` (default 10 000). The timeout covers the whole exchange, not just the send, so an endpoint that accepts a connection and then goes quiet fails the block instead of waiting indefinitely. Lower it when a wedged node must be reported quickly rather than accurately.
 - Without both `--start` and `--end`, the range is the `--blocks` most recent heights (default 20) ending at the **Go** endpoint's head. Passing `--start` above `--end` is rejected: an empty range would print `0/0 blocks consistent` and exit zero, which is indistinguishable from a pass.
 
 ### Examples

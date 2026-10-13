@@ -51,22 +51,24 @@ check:
 
 # Run the Go vs Rust consistency probe (compare recent block headers, one-click).
 # Override RPC endpoints with GO_RPC / RUST_RPC, or the block count with BLOCKS.
-probe GO_RPC="https://bsc-mainnet.bnbchain.org" RUST_RPC="http://localhost:8545" BLOCKS="20" WORKERS="8":
+# TIMEOUT_MS is the per-request timeout; lower it to fail fast on a wedged node.
+probe GO_RPC="https://bsc-mainnet.bnbchain.org" RUST_RPC="http://localhost:8545" BLOCKS="20" WORKERS="8" TIMEOUT_MS="10000":
   cargo run -q -p bsc-consistency-probe -- compare \
     --go {{GO_RPC}} --rust {{RUST_RPC}} \
-    --blocks {{BLOCKS}} --workers {{WORKERS}}
+    --blocks {{BLOCKS}} --workers {{WORKERS}} --timeout-ms {{TIMEOUT_MS}}
 
 # Run the probe over an explicit height range START..=END.
-probe-range START END GO_RPC="https://bsc-mainnet.bnbchain.org" RUST_RPC="http://localhost:8545" WORKERS="8":
+probe-range START END GO_RPC="https://bsc-mainnet.bnbchain.org" RUST_RPC="http://localhost:8545" WORKERS="8" TIMEOUT_MS="10000":
   cargo run -q -p bsc-consistency-probe -- compare \
     --go {{GO_RPC}} --rust {{RUST_RPC}} \
-    --start {{START}} --end {{END}} --workers {{WORKERS}}
+    --start {{START}} --end {{END}} --workers {{WORKERS}} --timeout-ms {{TIMEOUT_MS}}
 
 # Run cryptographic truth verification (eth_getProof Merkle proofs) against a Go endpoint.
-# Override with GO_RPC / BLOCK / STORAGE_SLOTS (uses the probe's default major-contract addresses).
-probe-truth GO_RPC="https://bsc-mainnet.bnbchain.org" BLOCK="latest" STORAGE_SLOTS="0,1,2":
+# Override with GO_RPC / BLOCK / STORAGE_SLOTS / TIMEOUT_MS
+# (uses the probe's default major-contract addresses).
+probe-truth GO_RPC="https://bsc-mainnet.bnbchain.org" BLOCK="latest" STORAGE_SLOTS="0,1,2" TIMEOUT_MS="10000":
   cargo run -q -p bsc-consistency-probe -- truth \
-    --go {{GO_RPC}} --block {{BLOCK}} --storage-slots {{STORAGE_SLOTS}}
+    --go {{GO_RPC}} --block {{BLOCK}} --storage-slots {{STORAGE_SLOTS}} --timeout-ms {{TIMEOUT_MS}}
 
 # ============================================================
 # BSC Private Networks (privnet/)
