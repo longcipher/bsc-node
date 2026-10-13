@@ -14,6 +14,9 @@ mod mpt;
 mod proof;
 mod rpc;
 
+#[cfg(test)]
+use std::time::Duration;
+
 use clap::{Parser, Subcommand};
 use eyre::{Result, eyre};
 use proof::{VerifiedAddress, parse_address_list, parse_slot_list, resolve_block, verify_address};
@@ -71,15 +74,19 @@ enum Cmd {
         /// Number of recent blocks to check when no range is given.
         #[arg(long, default_value_t = 20)]
         blocks: usize,
+        /// Number of block probes to keep in flight at once.
+        ///
+        /// One block probe issues four JSON-RPC calls, so this is what bounds
+        /// how much of a public endpoint's capacity a wide `--start..--end`
+        /// range consumes.
+        #[arg(long, default_value_t = 8)]
+        workers: usize,
         /// Also compare `eth_getBlockReceipts`.
         #[arg(long)]
         receipts: bool,
         /// Emit machine-readable JSON instead of a table.
         #[arg(long)]
         json: bool,
-        /// Concurrency is sequential in this build; retained for CLI parity.
-        #[arg(long, default_value_t = 8)]
-        workers: usize,
     },
     /// Cryptographic state-root truth verification via eth_getProof.
     ///
@@ -118,8 +125,11 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Compare { go, rust, start, end, blocks, receipts, json, .. } => {
-            run_compare(&go, &rust, start, end, blocks, receipts, json).await
+        Cmd::Compare { go, rust, start, end, blocks, workers, receipts, json } => {
+            let go = RpcClient::new(&go);
+            let rust = RpcClient::new(&rust);
+            let heights = resolve_heights(&go, start, end, blocks).await?;
+            run_compare(&go, &rust, &heights, workers, receipts, json).await
         }
         Cmd::Truth { go, rust, endpoint, block, addresses, storage_slots, json } => {
             run_truth(go, rust, endpoint, &block, addresses, &storage_slots, json).await
@@ -140,30 +150,104 @@ struct BlockResult {
     diffs: Vec<String>,
 }
 
-/// Runs the cross-client header comparison.
-async fn run_compare(
-    go_url: &str,
-    rust_url: &str,
+/// Resolves the height range to probe.
+///
+/// An explicit `--start`/`--end` pair is taken as the inclusive range it names,
+/// and the two bounds must be in order: an inverted range would probe nothing
+/// and then report "0/0 consistent", which reads like a pass.
+///
+/// Without both bounds the range is the `--blocks` most recent heights ending
+/// at the Go endpoint's head, so the CLI asks for the head exactly once.
+async fn resolve_heights(
+    go: &RpcClient,
     start: Option<u64>,
     end: Option<u64>,
     blocks: usize,
+) -> Result<Vec<u64>> {
+    if let (Some(s), Some(e)) = (start, end) {
+        if s > e {
+            return Err(eyre!("--start {s} is above --end {e}; nothing would be probed"));
+        }
+        return Ok((s..=e).collect());
+    }
+
+    let latest = go.block_number().await?;
+    // `--blocks 0` would underflow here, so it reads as "the head alone".
+    let from = latest.saturating_sub(blocks.saturating_sub(1) as u64);
+    Ok((from..=latest).collect())
+}
+
+/// Rejects a worker count that would leave nothing to probe.
+fn worker_count(workers: usize) -> Result<usize> {
+    if workers == 0 {
+        return Err(eyre!("--workers must be at least 1"));
+    }
+    Ok(workers)
+}
+
+/// Hands one block probe to the worker pool.
+fn spawn_probe(
+    in_flight: &mut tokio::task::JoinSet<(u64, Result<BlockResult>)>,
+    go: &RpcClient,
+    rust: &RpcClient,
+    height: u64,
+    check_receipts: bool,
+) {
+    let go = go.clone();
+    let rust = rust.clone();
+    in_flight.spawn(async move { (height, probe_block(&go, &rust, height, check_receipts).await) });
+}
+
+/// Runs the cross-client header comparison over the already-resolved heights.
+///
+/// Heights are probed `workers` at a time. Each block probe issues four
+/// JSON-RPC calls, so the worker count is what bounds how much of a public
+/// endpoint's capacity a wide range consumes, and a public node answers
+/// concurrently whether the caller asks for it or not.
+///
+/// Results are gathered in completion order and sorted by height afterwards, so
+/// the report is deterministic whatever order the two endpoints answer in.
+/// A height whose probe fails is still reported, as a diff on its own row, so
+/// one unreachable block does not silently drop out of the range.
+async fn run_compare(
+    go: &RpcClient,
+    rust: &RpcClient,
+    heights: &[u64],
+    workers: usize,
     check_receipts: bool,
     as_json: bool,
 ) -> Result<()> {
-    let go = RpcClient::new(go_url);
-    let rust = RpcClient::new(rust_url);
+    let workers = worker_count(workers)?;
 
-    let heights: Vec<u64> = if let (Some(s), Some(e)) = (start, end) {
-        (s..=e).collect()
-    } else {
-        let latest = go.block_number().await?;
-        let from = latest.saturating_sub(blocks as u64 - 1);
-        (from..=latest).collect()
-    };
+    let mut results = Vec::with_capacity(heights.len());
+    let mut in_flight = tokio::task::JoinSet::new();
+    let mut remaining = heights.iter().copied();
 
-    let mut results = Vec::new();
-    for h in heights {
-        results.push(probe_block(&go, &rust, h, check_receipts).await?);
+    // Prime the pool, then refill one slot per finished probe. A height is
+    // only handed to the pool as a slot frees up, so at most `workers` block
+    // probes are ever in flight.
+    for height in remaining.by_ref().take(workers) {
+        spawn_probe(&mut in_flight, go, rust, height, check_receipts);
+    }
+    while let Some(joined) = in_flight.join_next().await {
+        // A probe that failed, and a probe task that was cancelled, both leave
+        // the height without a result rather than aborting the whole run.
+        let (height, outcome) = match joined {
+            Ok(pair) => pair,
+            Err(e) => (0, Err(eyre!("block probe task failed: {e}"))),
+        };
+        results.push(match outcome {
+            Ok(result) => result,
+            Err(e) => BlockResult {
+                number: height,
+                state_root_match: false,
+                ok: false,
+                diffs: vec![format!("probe failed: {e}")],
+            },
+        });
+        if let Some(next) = remaining.next() {
+            spawn_probe(&mut in_flight, go, rust, next, check_receipts);
+        }
     }
     results.sort_by_key(|r| r.number);
 
@@ -930,15 +1014,31 @@ mod tests {
         );
     }
 
+    /// Points a compare run at two loopback endpoints over an explicit range.
+    async fn compare_range(
+        go: &MockRpc,
+        rust: &MockRpc,
+        heights: &[u64],
+        workers: usize,
+    ) -> Result<()> {
+        run_compare(
+            &RpcClient::new(&go.url()),
+            &RpcClient::new(&rust.url()),
+            heights,
+            workers,
+            false,
+            false,
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn run_compare_succeeds_over_a_consistent_range() {
         let routes = go_routes("0x65", "0xabc", 100);
         let go = MockRpc::start(routes.clone()).await;
         let rust = MockRpc::start(routes).await;
 
-        assert!(
-            run_compare(&go.url(), &rust.url(), Some(100), Some(101), 1, true, false).await.is_ok()
-        );
+        assert!(compare_range(&go, &rust, &[100, 101], 1).await.is_ok());
     }
 
     #[tokio::test]
@@ -946,9 +1046,7 @@ mod tests {
         let go = MockRpc::start(go_routes("0x65", "0xaaa", 100)).await;
         let rust = MockRpc::start(go_routes("0x65", "0xbbb", 100)).await;
 
-        let err = run_compare(&go.url(), &rust.url(), Some(100), Some(101), 1, true, false)
-            .await
-            .unwrap_err();
+        let err = compare_range(&go, &rust, &[100, 101], 1).await.unwrap_err();
         assert!(err.to_string().contains("inconsistent"), "unexpected: {err}");
     }
 
@@ -956,9 +1054,12 @@ mod tests {
     async fn run_compare_defaults_to_the_recent_window() {
         // With no explicit range the height comes from eth_blockNumber.
         let go = MockRpc::start(go_routes("0x65", "0xabc", 101)).await;
-        let rust = MockRpc::start(go_routes("0x65", "0xabc", 101)).await;
+        let _rust = MockRpc::start(go_routes("0x65", "0xabc", 101)).await;
 
-        assert!(run_compare(&go.url(), &rust.url(), None, None, 2, false, false).await.is_ok());
+        let heights = resolve_heights(&RpcClient::new(&go.url()), None, None, 2)
+            .await
+            .expect("window must resolve");
+        assert_eq!(heights, vec![100, 101]);
         assert!(go.requests().iter().any(|r| r["method"] == "eth_blockNumber"));
     }
 
@@ -968,10 +1069,17 @@ mod tests {
         let go = MockRpc::start(routes.clone()).await;
         let rust = MockRpc::start(routes).await;
 
+        let outcome = run_compare(
+            &RpcClient::new(&go.url()),
+            &RpcClient::new(&rust.url()),
+            &[100],
+            1,
+            false,
+            true,
+        )
+        .await;
         // The JSON path must not change the pass/fail outcome.
-        assert!(
-            run_compare(&go.url(), &rust.url(), Some(100), Some(100), 1, false, true).await.is_ok()
-        );
+        assert!(outcome.is_ok());
     }
 
     #[tokio::test]
@@ -980,7 +1088,16 @@ mod tests {
         let go = MockRpc::start(routes.clone()).await;
         let rust = MockRpc::start(routes).await;
 
-        run_compare(&go.url(), &rust.url(), Some(100), Some(100), 1, false, true).await.unwrap();
+        run_compare(
+            &RpcClient::new(&go.url()),
+            &RpcClient::new(&rust.url()),
+            &[100],
+            1,
+            false,
+            true,
+        )
+        .await
+        .unwrap();
 
         // Re-derive the summary the command prints so the shape is pinned.
         let summary = json!({
@@ -999,6 +1116,247 @@ mod tests {
         assert_eq!(v["results"][0]["number"], 100);
         assert_eq!(v["results"][0]["ok"], true);
         assert_eq!(v["results"][0]["state_root_match"], true);
+    }
+
+    // ------------------------------------------------------------------
+    // resolve_heights
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn resolve_heights_takes_an_explicit_inclusive_range() {
+        // An explicit pair must not touch the endpoint at all.
+        let server = MockRpc::start(vec![("eth_blockNumber", json!("0xff"))]).await;
+        let client = RpcClient::new(&server.url());
+
+        let heights = resolve_heights(&client, Some(100), Some(103), 20).await.unwrap();
+        assert_eq!(heights, vec![100, 101, 102, 103]);
+        assert!(server.requests().is_empty(), "an explicit range needs no eth_blockNumber");
+    }
+
+    #[tokio::test]
+    async fn resolve_heights_accepts_a_single_block_range() {
+        let server = MockRpc::start(vec![]).await;
+        let client = RpcClient::new(&server.url());
+
+        assert_eq!(resolve_heights(&client, Some(7), Some(7), 20).await.unwrap(), vec![7]);
+    }
+
+    #[tokio::test]
+    async fn resolve_heights_rejects_an_inverted_range() {
+        // Probing nothing and reporting "0/0 consistent" reads like a pass.
+        let server = MockRpc::start(vec![]).await;
+        let client = RpcClient::new(&server.url());
+
+        let err = resolve_heights(&client, Some(103), Some(100), 20).await.unwrap_err();
+        assert!(err.to_string().contains("above"), "unexpected: {err}");
+    }
+
+    #[tokio::test]
+    async fn resolve_heights_windows_recent_blocks_from_the_head() {
+        let server = MockRpc::start(vec![("eth_blockNumber", json!("0x65"))]).await;
+        let client = RpcClient::new(&server.url());
+
+        assert_eq!(resolve_heights(&client, None, None, 2).await.unwrap(), vec![100, 101]);
+        assert_eq!(resolve_heights(&client, None, None, 3).await.unwrap(), vec![99, 100, 101]);
+    }
+
+    #[tokio::test]
+    async fn resolve_heights_clamps_the_window_at_genesis() {
+        // A head below the window size must not underflow to u64::MAX.
+        let server = MockRpc::start(vec![("eth_blockNumber", json!("0x1"))]).await;
+        let client = RpcClient::new(&server.url());
+
+        assert_eq!(resolve_heights(&client, None, None, 20).await.unwrap(), vec![0, 1]);
+    }
+
+    #[tokio::test]
+    async fn resolve_heights_reads_zero_blocks_as_the_head_alone() {
+        // `--blocks 0` would underflow `blocks - 1`.
+        let server = MockRpc::start(vec![("eth_blockNumber", json!("0x65"))]).await;
+        let client = RpcClient::new(&server.url());
+
+        assert_eq!(resolve_heights(&client, None, None, 0).await.unwrap(), vec![101]);
+    }
+
+    #[tokio::test]
+    async fn resolve_heights_propagates_an_unreachable_head() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let dead = listener.local_addr().unwrap();
+        drop(listener);
+
+        let err = resolve_heights(&RpcClient::new(&format!("http://{dead}")), None, None, 4)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("failed"), "unexpected: {err}");
+    }
+
+    // ------------------------------------------------------------------
+    // worker_count
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn worker_count_passes_positive_counts_through() {
+        for n in [1usize, 2, 8, 1024] {
+            assert_eq!(worker_count(n).unwrap(), n);
+        }
+    }
+
+    #[test]
+    fn worker_count_rejects_zero() {
+        // Zero workers would prime an empty pool and probe nothing, which the
+        // report would then render as "0/0 consistent".
+        assert!(worker_count(0).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // Bounded concurrency
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn run_compare_uses_the_workers_it_was_given() {
+        // The bound below is only meaningful if the workers are really used.
+        // All 8 block probes are primed before any of them can answer, so the
+        // peak is exactly 8 blocks x 2 calls = 16 per endpoint.
+        let routes = go_routes("0x64", "0xabc", 100);
+        let go = MockRpc::start(routes.clone()).await;
+        let rust = MockRpc::start(routes).await;
+        let heights: Vec<u64> = (100..108).collect();
+
+        assert!(compare_range(&go, &rust, &heights, 8).await.is_ok());
+
+        assert_eq!(
+            go.peak_in_flight(),
+            16,
+            "8 workers must keep 8 block probes in flight, not fall back to sequential"
+        );
+        assert_eq!(rust.peak_in_flight(), 16, "8 workers must keep 8 block probes in flight");
+    }
+
+    #[tokio::test]
+    async fn run_compare_bounds_concurrency_to_the_worker_count() {
+        // One block probe issues two concurrent requests to each endpoint, so a
+        // run with N workers opens at most 2N connections to either side. That
+        // bound is the point: it is what stops a wide --start..--end range from
+        // exhausting the sockets of a public node.
+        for workers in [1usize, 2, 3, 5, 8] {
+            let routes = go_routes("0x64", "0xabc", 100);
+            let go = MockRpc::start(routes.clone()).await;
+            let rust = MockRpc::start(routes).await;
+            let heights: Vec<u64> = (100..116).collect();
+
+            assert!(compare_range(&go, &rust, &heights, workers).await.is_ok());
+
+            let ceiling = workers * 2;
+            assert!(
+                go.peak_in_flight() <= ceiling,
+                "{workers} workers: go peaked at {} concurrent requests, ceiling {ceiling}",
+                go.peak_in_flight()
+            );
+            assert!(
+                rust.peak_in_flight() <= ceiling,
+                "{workers} workers: rust peaked at {} concurrent requests, ceiling {ceiling}",
+                rust.peak_in_flight()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn run_compare_with_one_worker_opens_only_its_block_two_calls() {
+        // The control case: a single worker must never overlap the requests of
+        // two blocks, which is what makes the peak a measurement of the worker
+        // count rather than of anything else.
+        let routes = go_routes("0x64", "0xabc", 100);
+        let go = MockRpc::start(routes.clone()).await;
+        let rust = MockRpc::start(routes).await;
+        let heights: Vec<u64> = (100..108).collect();
+
+        assert!(compare_range(&go, &rust, &heights, 1).await.is_ok());
+
+        assert_eq!(go.peak_in_flight(), 2, "one worker must not overlap two blocks");
+        assert_eq!(rust.peak_in_flight(), 2, "one worker must not overlap two blocks");
+    }
+
+    #[tokio::test]
+    async fn run_compare_reports_every_block_in_ascending_order() {
+        // Heights are handed to workers in order, but they complete in
+        // whatever order the endpoints answer, so the report must re-sort.
+        let routes = go_routes("0x64", "0xabc", 100);
+        let go = MockRpc::start(routes.clone()).await;
+        let rust = MockRpc::start(routes).await;
+
+        let heights: Vec<u64> = (0..40).rev().collect();
+        assert!(compare_range(&go, &rust, &heights, 8).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn run_compare_probes_every_height_exactly_once() {
+        let routes = go_routes("0x64", "0xabc", 100);
+        let go = MockRpc::start(routes.clone()).await;
+        let rust = MockRpc::start(routes).await;
+
+        let heights: Vec<u64> = (0..24).collect();
+        compare_range(&go, &rust, &heights, 5).await.unwrap();
+
+        // Four requests per block per endpoint: 24 x 4 = 96.
+        let sent = go.requests().len() + rust.requests().len();
+        assert_eq!(sent, 96, "each height must be probed exactly once");
+    }
+
+    #[tokio::test]
+    async fn run_compare_handles_more_workers_than_heights() {
+        let routes = go_routes("0x64", "0xabc", 100);
+        let go = MockRpc::start(routes.clone()).await;
+        let rust = MockRpc::start(routes).await;
+
+        assert!(compare_range(&go, &rust, &[100, 101], 16).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn run_compare_drains_every_in_flight_request() {
+        // A JoinSet that outlives its results would leave connections open.
+        let routes = go_routes("0x64", "0xabc", 100);
+        let go = MockRpc::start(routes.clone()).await;
+        let rust = MockRpc::start(routes).await;
+
+        let heights: Vec<u64> = (100..108).collect();
+        assert!(compare_range(&go, &rust, &heights, 8).await.is_ok());
+
+        // The accept loop outlives its tasks, so poll until they are done
+        // rather than asserting the instant the compare run returns.
+        for _ in 0..100 {
+            if go.in_flight() == 0 && rust.in_flight() == 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!(
+            "requests left in flight after the run: go={} rust={}",
+            go.in_flight(),
+            rust.in_flight()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_compare_reports_a_failed_probe_instead_of_dropping_it() {
+        // One dead endpoint must surface as that height's diff, not as a
+        // silently shortened range.
+        let go = MockRpc::start(go_routes("0x64", "0xabc", 100)).await;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let dead = listener.local_addr().unwrap();
+        drop(listener);
+
+        let err = run_compare(
+            &RpcClient::new(&go.url()),
+            &RpcClient::new(&format!("http://{dead}")),
+            &[100, 101, 102],
+            2,
+            false,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("inconsistent"), "unexpected: {err}");
+        assert!(err.to_string().contains("3"), "every failed height counts: {err}");
     }
 
     // ------------------------------------------------------------------

@@ -13,7 +13,10 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use serde_json::{Value, json};
@@ -44,6 +47,8 @@ pub fn raw_body(body: &str) -> Value {
 pub struct MockRpc {
     addr: SocketAddr,
     requests: Arc<Mutex<Vec<Value>>>,
+    in_flight: Arc<AtomicUsize>,
+    peak_in_flight: Arc<AtomicUsize>,
 }
 
 impl MockRpc {
@@ -59,20 +64,26 @@ impl MockRpc {
         let routes: Arc<HashMap<String, Value>> =
             Arc::new(routes.into_iter().map(|(k, v)| (k.to_string(), v)).collect());
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak_in_flight = Arc::new(AtomicUsize::new(0));
 
         let srv_routes = Arc::clone(&routes);
         let srv_requests = Arc::clone(&requests);
+        let srv_flight = Arc::clone(&in_flight);
+        let srv_peak = Arc::clone(&peak_in_flight);
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
                 let routes = Arc::clone(&srv_routes);
                 let requests = Arc::clone(&srv_requests);
+                let in_flight = Arc::clone(&srv_flight);
+                let peak_in_flight = Arc::clone(&srv_peak);
                 tokio::spawn(async move {
-                    let _ = serve(stream, &routes, &requests).await;
+                    let _ = serve(stream, &routes, &requests, &in_flight, &peak_in_flight).await;
                 });
             }
         });
 
-        Self { addr, requests }
+        Self { addr, requests, in_flight, peak_in_flight }
     }
 
     /// The `http://host:port` URL to point an [`crate::rpc::RpcClient`] at.
@@ -85,6 +96,26 @@ impl MockRpc {
     #[must_use]
     pub fn requests(&self) -> Vec<Value> {
         self.requests.lock().map_or_else(|e| e.into_inner().clone(), |g| g.clone())
+    }
+
+    /// The largest number of requests this endpoint was serving at once.
+    ///
+    /// This is what lets a test *require* concurrency: a caller that never
+    /// overlaps its requests leaves this at 1 no matter how it is configured,
+    /// so an assertion on it cannot be satisfied by an unrelated speed-up.
+    #[must_use]
+    pub fn peak_in_flight(&self) -> usize {
+        self.peak_in_flight.load(Ordering::SeqCst)
+    }
+
+    /// The number of requests still being served.
+    ///
+    /// A probe run must always drain to zero: anything still in flight here
+    /// after the run means a connection was left open, which the results would
+    /// never reveal.
+    #[must_use]
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
     }
 
     /// The single request the server received.
@@ -105,8 +136,28 @@ async fn serve(
     mut stream: TcpStream,
     routes: &HashMap<String, Value>,
     requests: &Mutex<Vec<Value>>,
+    in_flight: &AtomicUsize,
+    peak_in_flight: &AtomicUsize,
 ) -> Result<(), String> {
-    let Some(req) = read_request(&mut stream).await? else {
+    let open = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+    // A plain store is safe here: the count only ever rises while this request
+    // is being served, so the last writer in always holds the maximum.
+    peak_in_flight.fetch_max(open, Ordering::SeqCst);
+
+    let served = serve_inner(&mut stream, routes, requests).await;
+
+    in_flight.fetch_sub(1, Ordering::SeqCst);
+    served
+}
+
+/// Reads one request and answers it, with the in-flight accounting done by the
+/// caller so every exit path decrements.
+async fn serve_inner(
+    stream: &mut TcpStream,
+    routes: &HashMap<String, Value>,
+    requests: &Mutex<Vec<Value>>,
+) -> Result<(), String> {
+    let Some(req) = read_request(stream).await? else {
         return Ok(());
     };
     if let Ok(mut log) = requests.lock() {
@@ -135,9 +186,8 @@ async fn serve(
         .to_string(),
     };
 
-    write_response(&mut stream, &body).await
+    write_response(stream, &body).await
 }
-
 async fn read_request(stream: &mut TcpStream) -> Result<Option<Value>, String> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 2048];
