@@ -25,6 +25,13 @@ Go `bsc` 是 BSC 主网 45 个活跃验证者实际运行的权威客户端；Ru
 - `compare` —— 在高度区间 `[start, end]` 内，对 Go 与 Rust 同高度区块头逐字段比较（含 `stateRoot` / `receiptsRoot` / `transactionsRoot` 等），输出逐区块差异与汇总。
 - `truth` —— 用 `eth_getProof` 拉取账户与存储证明，按 MPT 规则验证叶子确实承诺于所声明的 `stateRoot`。可只给 `--go`（以 Go 为可信源），也可同时给 `--go` 与 `--rust` 做三方可信交叉校验。
 
+### 需要知道的行为
+
+- `compare` 以 `--workers` 个高度为一批并发探测（默认 8）。单个区块探测会发 4 个 JSON-RPC 调用，因此该参数决定了大范围 `--start..--end` 会占用公共端点多少并发能力。结果始终按高度升序输出，与哪个端先返回无关。
+- 某个高度的探测失败会作为该行的一条差异上报，而不是从区间里悄悄消失——否则调用方关心的失败数会被少报。
+- 只要存在不一致或探测失败的高度，退出码即为非零，因此 `compare` 可直接作为 CI 卡点。汇总行总会先打印。
+- 未同时给出 `--start` 与 `--end` 时，区间为 **Go** 端点 head 之前的最近 `--blocks` 个高度（默认 20）。`--start` 大于 `--end` 会被拒绝：空区间会打印 `0/0 blocks consistent` 并以 0 退出，与“通过”无法区分。
+
 ### 使用示例
 
 ```bash
@@ -37,15 +44,15 @@ cargo run -p bsc-consistency-probe -- compare \
 # 以 Go 为可信源，验证某账户及其 storage slot 的 Merkle 证明
 cargo run -p bsc-consistency-probe -- truth \
   --go https://bsc-mainnet.bnbchain.org \
-  --address 0xbb4C0b1500D34CC1b8d8e5f0b1f26a0aE0c1E2d3 \
-  --slots 0x0,0x1 --block 38000100
+  --addresses 0xBb4cDB9CBD36b01bc983AEC51fA2D8C5B2F3f3A7 \
+  --storage-slots 0x0,0x1 --block 38000100
 
 # 三方可信校验：Go 与 Rust 都作为证明源，交叉验证
 cargo run -p bsc-consistency-probe -- truth \
   --go   https://bsc-mainnet.bnbchain.org \
   --rust https://your-reth-bsc.example.com \
-  --address 0xbb4C0b1500D34CC1b8d8e5f0b1f26a0aE0c1E2d3 \
-  --slots 0x0 --block 38000100
+  --addresses 0xBb4cDB9CBD36b01bc983AEC51fA2D8C5B2F3f3A7 \
+  --storage-slots 0x0 --block 38000100
 ```
 
 ## 开发工作流

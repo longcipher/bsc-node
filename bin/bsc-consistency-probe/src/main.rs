@@ -20,7 +20,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use eyre::{Result, eyre};
 use proof::{VerifiedAddress, parse_address_list, parse_slot_list, resolve_block, verify_address};
-use rpc::{RpcClient, parse_u64_hex, to_hex};
+use rpc::{RpcClient, to_hex};
 use serde::Serialize;
 use serde_json::Value;
 use tracing_subscriber::EnvFilter;
@@ -569,11 +569,6 @@ fn cross_check(report: &serde_json::Map<String, Value>, go_name: &str, rust_name
         }
     }
     true
-}
-
-/// Parse helper re-exported for documentation parity with the RPC module.
-pub fn parse_height(s: &str) -> Result<u64> {
-    parse_u64_hex(s)
 }
 
 #[cfg(test)]
@@ -1394,7 +1389,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // print_verified / parse_height
+    // BlockResult / print_verified
     // ------------------------------------------------------------------
 
     #[test]
@@ -1432,18 +1427,5 @@ mod tests {
             account: None,
             slots: vec![],
         });
-    }
-
-    #[test]
-    fn parse_height_hex() {
-        assert_eq!(parse_height("0x10").unwrap(), 16);
-        assert_eq!(parse_height("10").unwrap(), 16);
-    }
-
-    #[test]
-    fn parse_height_rejects_bad() {
-        assert!(parse_height("zz").is_err());
-        assert!(parse_height("").is_err());
-        assert!(parse_height("-1").is_err());
     }
 }

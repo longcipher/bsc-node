@@ -415,29 +415,20 @@ fn compare_reports_a_failed_probe_for_every_block_it_was_asked_to_check() {
 
 /// Routes serving a block and its real mainnet `eth_getProof` response.
 ///
-/// Returns the routes and the block tag they were captured at, so a test can
-/// hand the same setup to two endpoints by cloning.
+/// Returns the block tag and the routes that answer it, so a test can hand
+/// the same setup to two endpoints. The route names are `'static` literals
+/// and the results are owned, so nothing has to outlive the test.
 fn truth_routes(key: &str) -> (String, Vec<(&'static str, Value)>) {
     let f: Value = serde_json::from_str(FIXTURE).expect("mainnet fixture must be valid JSON");
     let block = f["block"].as_str().expect("block").to_string();
-    let root = json_string(f["state_root"].as_str().expect("state_root"));
-    let proof = json_owned(f[key]["response"].clone());
+    let root = f["state_root"].as_str().expect("state_root").to_string();
+    let proof = f[key]["response"].clone();
 
     (block, vec![
         ("eth_blockNumber", json!("0x79141de")),
         ("eth_getBlockByNumber", json!({ "stateRoot": root })),
-        ("eth_getProof", proof.clone()),
+        ("eth_getProof", proof),
     ])
-}
-
-/// Leaks a `&'static str` so a route tuple can be `'static`.
-fn json_string(s: &str) -> &'static str {
-    Box::leak(s.to_string().into_boxed_str())
-}
-
-/// Leaks an owned JSON value so a route tuple can be `'static`.
-fn json_owned(v: Value) -> &'static Value {
-    Box::leak(Box::new(v))
 }
 
 #[test]

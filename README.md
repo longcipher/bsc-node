@@ -29,6 +29,13 @@ Therefore, any critical workload that trusts a Rust node as a state source (e.g.
 - `compare` — In the height range `[start, end]`, compares Go vs Rust block headers field-by-field at the same height (including `stateRoot` / `receiptsRoot` / `transactionsRoot`), printing per-block diffs and a summary.
 - `truth` — Pulls account/storage proofs via `eth_getProof` and verifies, per MPT rules, that the leaves are genuinely committed under the reported `stateRoot`. Pass only `--go` (Go as the trusted source) or both `--go` and `--rust` for a three-way trusted cross-check.
 
+### Behavior worth knowing
+
+- `compare` probes `--workers` heights at a time (default 8). One block probe issues four JSON-RPC calls, so this is what bounds how much of a public endpoint's capacity a wide `--start..--end` range consumes. Results are reported in ascending height order regardless of which endpoint answers first.
+- A height whose probe fails is reported as a diff on its own row rather than silently dropping out of the range, because dropping it would understate the failures the caller asked about.
+- Any inconsistent or unprobeable block makes the exit status non-zero, so `compare` is usable directly as a CI gate. A summary line always prints first.
+- Without both `--start` and `--end`, the range is the `--blocks` most recent heights (default 20) ending at the **Go** endpoint's head. Passing `--start` above `--end` is rejected: an empty range would print `0/0 blocks consistent` and exit zero, which is indistinguishable from a pass.
+
 ### Examples
 
 ```bash
@@ -41,15 +48,15 @@ cargo run -p bsc-consistency-probe -- compare \
 # Verify a Merkle proof for an account and its storage slots, trusting Go
 cargo run -p bsc-consistency-probe -- truth \
   --go https://bsc-mainnet.bnbchain.org \
-  --address 0xbb4C0b1500D34CC1b8d8e5f0b1f26a0aE0c1E2d3 \
-  --slots 0x0,0x1 --block 38000100
+  --addresses 0xBb4cDB9CBD36b01bc983AEC51fA2D8C5B2F3f3A7 \
+  --storage-slots 0x0,0x1 --block 38000100
 
 # Three-way trusted check: both Go and Rust act as proof sources
 cargo run -p bsc-consistency-probe -- truth \
   --go   https://bsc-mainnet.bnbchain.org \
   --rust https://your-reth-bsc.example.com \
-  --address 0xbb4C0b1500D34CC1b8d8e5f0b1f26a0aE0c1E2d3 \
-  --slots 0x0 --block 38000100
+  --addresses 0xBb4cDB9CBD36b01bc983AEC51fA2D8C5B2F3f3A7 \
+  --storage-slots 0x0 --block 38000100
 ```
 
 ## Development Workflow

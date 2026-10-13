@@ -104,9 +104,15 @@ publish-check:
 publish:
   cargo publish --workspace
 
-# Check for Chinese characters
+# Check for Chinese characters in the English-only sources
+#
+# The `.zh.md` documents are deliberately Chinese, so they are excluded: without
+# this the recipe reports ~300 intentional hits and never comes back clean,
+# which makes it useless for finding a stray CJK comment in a Rust file. The
+# few hits it does report are the lines that name each English document's
+# translation, which cannot be written in English and are meant to be there.
 check-cn:
-  rg --line-number --column "\p{Han}"
+  rg --line-number --column "\p{Han}" -g '!*.zh.md'
 
 # Full CI check
 ci: lint test build
