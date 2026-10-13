@@ -12,6 +12,8 @@
 #   GETH_BIN      geth (Go bsc) binary            [default: geth from PATH]
 #   RETH_BIN      reth-bsc (Rust) binary          [default: reth-bsc from PATH]
 #   PRIVNET_DIR   runtime data directory          [default: <script-dir>/data]
+#   BREATHE_BLOCK_INTERVAL   breathe-block interval, seconds
+#                             [default: 1e15, i.e. never -- see below]
 #
 # Requirements: a geth binary built from bnb-chain/bsc, and (for rust/mixed
 # modes) a reth-bsc binary built from a source tree that contains the
@@ -39,6 +41,34 @@ DATA_DIR="${PRIVNET_DIR:-$SCRIPT_DIR/data}"
 GETH_BIN="${GETH_BIN:-geth}"
 RETH_BIN="${RETH_BIN:-reth-bsc}"
 GENESIS="$SCRIPT_DIR/genesis.json"
+
+# A "breathe block" is one whose parent lies in an earlier UTC day
+# (`isBreatheBlock` in consensus/parlia). It is the only place
+# `updateValidatorSetV2` runs, so it is the one system transaction a private
+# network cannot serve: bsc-genesis-contract's genesis-dev.json ships a
+# pre-Feynman `BSCValidatorSet` at 0x1000 that has no `updateValidatorSetV2`
+# selector, and go-bsc never replaces it, because its built-in system-contract
+# upgrade table has no entry for a custom chain (`feynmanUpgrade[defaultNet]` is
+# nil and `applySystemContractUpgrade` no-ops). The call then halts with
+# `invalid opcode: INVALID` *inside block assembly*, so the miner can never seal
+# again and the chain is dead until the datadir is wiped.
+#
+# This is not a pause-only problem: crossing a UTC day is enough, running or
+# not. It is unavoidable on a 7x24 private network within 24h of block 1.
+#
+# `isBreatheBlock` is a consensus rule, so every node must derive the same
+# answer. Both clients expose an override:
+#   go-bsc   : --override.breatheblockinterval <seconds>
+#   reth-bsc : BREATHE_BLOCK_INTERVAL=<seconds>
+#
+# The default below is deliberately not 86400: a private network's validator set
+# never changes, so the daily refresh buys nothing and only ever serves to stop
+# the chain. Any interval far larger than any real timestamp makes every pair of
+# timestamps share a bucket, `isBreatheBlock` never fires, and the system
+# transaction is never attempted. Set BREATHE_BLOCK_INTERVAL=86400 to restore
+# the production schedule (you will then also want a datadir reset every 24h).
+# Never change it on an already-running chain: the block layout forks.
+BREATHE_BLOCK_INTERVAL="${BREATHE_BLOCK_INTERVAL:-1000000000000000}"
 
 # Fixed development validator key. NEVER use on mainnet/testnet.
 VALIDATOR_KEY="1111111111111111111111111111111111111111111111111111111111111111"
@@ -127,6 +157,7 @@ start_go_miner() { # start_go_miner <name> <p2p-port> <http-port>
     --mine --miner.etherbase "$VALIDATOR_ADDR" \
     --unlock "$VALIDATOR_ADDR" --password "$dir/passfile" \
     --allow-insecure-unlock --verbosity 3 --miner.recommit 1s \
+    --override.breatheblockinterval "$BREATHE_BLOCK_INTERVAL" \
     >"$dir/node.log" 2>&1 &
   echo $! > "$dir/pid"
   wait_rpc "$http"
@@ -145,6 +176,7 @@ start_go_follower() { # start_go_follower <name> <p2p-port> <http-port>
     --http.api eth,net,web3,txpool,parlia,admin \
     --nodekeyhex "$(cat "$dir/nodekey.hex")" --nodiscover \
     --verbosity 3 --syncmode full \
+    --override.breatheblockinterval "$BREATHE_BLOCK_INTERVAL" \
     >"$dir/node.log" 2>&1 &
   echo $! > "$dir/pid"
   wait_rpc "$http"
@@ -170,7 +202,13 @@ start_rust_node() { # start_rust_node <name> <p2p> <http> <authrpc> <trusted-eno
     args+=(--mining.enabled --mining.private-key "0x$VALIDATOR_KEY" --mining.gas-limit 40000000)
   fi
   log "starting Rust node $name (p2p $p2p, http $http, miner=$miner)"
-  "$RETH_BIN" "${args[@]}" >"$dir/node.out" 2>"$dir/node.log" &
+  # NOTE: -d (no discovery) is required; otherwise a custom chain falls back
+  # to public bootnodes and gets banned by mainnet peers.
+  # BREATHE_BLOCK_INTERVAL must match the Go nodes': `isBreatheBlock` decides
+  # whether a block carries the `updateValidatorSetV2` system transaction, so a
+  # disagreement forks the chain.
+  BREATHE_BLOCK_INTERVAL="$BREATHE_BLOCK_INTERVAL" "$RETH_BIN" "${args[@]}" \
+    >"$dir/node.out" 2>"$dir/node.log" &
   echo $! > "$dir/pid"
   wait_rpc "$http" 90
   assert_chain_id "$http" 1337 "$name"
@@ -257,6 +295,7 @@ do_system_contracts() {
 start_mode() { # start_mode <go|rust|mixed>
   local mode="$1"
   mkdir -p "$DATA_DIR"
+  log "breathe-block interval: ${BREATHE_BLOCK_INTERVAL}s (all nodes must agree)"
   case "$mode" in
     go) need_bin "$GETH_BIN" GETH_BIN ;;
     rust|mixed)

@@ -228,3 +228,55 @@ All of §2–§5 was repeated against Go @ `8cc60b246` and Rust @ `349f55c` (bot
 - Jenner (BEP-706/714) exists on develop but is **qanet-only** (activated 2026-10-05);
   mainnet/testnet do not schedule it, and BEP-714 backoff changes are mirrored on
   both clients — no interop impact on these tests (no timestamp forks configured).
+
+## 11. The daily breathe block, and why a private network has to switch it off (2026-10-13)
+
+A `breathe block` is a block whose parent lies in an earlier UTC day
+(`isBreatheBlock`, `consensus/parlia/feynmanfork.go`). It is the only place
+`updateValidatorSetV2` runs. On this private network it is fatal, and it is
+worth writing down because it is invisible for the first 24h and then permanent.
+
+Observed live: go1 served RPC and stayed alive, but sealed nothing — one
+`apply message failed msg= err="invalid opcode: INVALID"` per second, forever.
+`eth_blockNumber` froze. Cause, in order:
+
+1. **`0x1000` carries pre-Feynman bytecode.** `bsc-genesis-contract`'s
+   `genesis-dev.json` deploys a `BSCValidatorSet` whose runtime code contains
+   the `deposit` selector but not `updateValidatorSetV2` (`0x6550d581`).
+   Confirmed against the node: `eth_getCode` at the tip returns the same 28 663
+   bytes the genesis alloc defines.
+2. **go-bsc never upgrades it.** `upgradeBuildInSystemContract` selects its table
+   by genesis hash; custom chains fall to `defaultNet`, and `feynmanUpgrade`
+   only has `mainNet`/`chapelNet`, so `applySystemContractUpgrade(nil, …)`
+   just logs `Empty upgrade config` and returns. reth-bsc has the same gap
+   (`src/system_contracts/` has no custom-chain table either).
+3. **The call therefore hits the dispatcher default**, which compiles to
+   `INVALID`, and it does so inside `finalizeAndAssemble` — so no block is
+   produced at all, rather than a block containing a failed transaction.
+
+Not a pause artefact: crossing a UTC day is sufficient, so an uninterrupted
+7×24 network hits it within 24h of block 1. Block 1 itself survives only because
+`IsOnFeynman` skips the first Feynman-active block — which is why a freshly
+started network looks healthy and the failure only appears much later.
+
+Both clients expose an override for the interval, which is the whole fix:
+
+| client | override |
+|---|---|
+| go-bsc | `--override.breatheblockinterval <seconds>` (`cmd/geth/config.go`) |
+| reth-bsc | `BREATHE_BLOCK_INTERVAL=<seconds>` (`src/consensus/parlia/util.rs`) |
+
+Measured (`privnet/ab-start.sh`, all four nodes agreeing):
+
+| interval | result |
+|---|---|
+| `120` | stalls within 2 minutes of block 1, same `invalid opcode: INVALID` |
+| `1e15` | runs past the boundary; 4 nodes agree byte-for-byte on hash + `stateRoot`; 0 `ERROR` in any log |
+
+`privnet.sh` now passes one `BREATHE_BLOCK_INTERVAL` to every node and defaults
+it to `1e15`. Disabling it is correct for a private network: the validator set
+never changes, so the daily refresh has nothing to do. Two caveats: the interval
+is consensus, so all nodes must match (and reth reads it at process start, so a
+restart is the only way to change it); and `EstimateGasReservedForSystemTxs`
+returns the soft limit instead of the hard limit, which only *frees* gas for
+user transactions.

@@ -98,6 +98,18 @@ privnet-stop:
 privnet-clean:
   ./privnet/privnet.sh clean
 
+# A/B regression check for the daily breathe block, the failure that is
+# invisible for 24h and then permanent (~8 minutes). Case A shrinks the
+# interval so the chain must stall; case B runs the shipped default and proves
+# it keeps producing, with all four nodes agreeing. See privnet/README.md.
+privnet-verify-breathe:
+  ./privnet/ab-breathe-interval.sh
+
+# Only the "must keep producing blocks" side of the breathe-block check
+# (~2 minutes). Use this when you only changed the fix itself.
+privnet-verify-breathe-fast:
+  ./privnet/ab-breathe-interval.sh --case-b
+
 # Publish all crates to crates.io (dry run)
 publish-check:
   cargo publish --workspace --dry-run --allow-dirty

@@ -54,3 +54,51 @@ GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 - **Go 的 `--nodiscover` 下 `--bootnodes` 不会被拨号。** 本脚本 Go↔Go 用 `admin.addPeer` 直连。
 - **链会在 199 块附近停滞。** 共享创世文件没有部署系统合约，两端都组装不出 epoch-200 的验证人集合：Go 报 `Failed to prepare header for sealing` 停在 199；Rust 报 `failed to decode getValidators output` 停在 198。两端都存活并继续服务 RPC——这是同级的优雅降级。如需更长的运行，把数据目录清掉重跑即可（同一创世文件仍可用：chainId/创世哈希不变，新块用墙钟时间戳）。
 - **不要用同一验证人私钥同时跑两个出块节点。** 两端都按 ~3s 出块，tip 会在两分叉间抖动（最终会收敛，但日志全是重组噪音）。切换出块权请用 handover 动作，保持单一生产者。
+
+## 「每日呼吸块」问题
+
+**呼吸块（breathe block）**指父块处于上一个 UTC 自然日的块，它是
+`updateValidatorSetV2` 唯一会执行的地方（`consensus/parlia/feynmanfork.go`），
+而它恰好也是私网无法完成的唯一一笔系统交易，原因有两条且互相叠加：
+
+1. `bsc-genesis-contract` 的 `genesis-dev.json` 里部署在 `0x1000` 的是
+   **Feynman 之前**的 `BSCValidatorSet` —— 其运行时代码里根本没有
+   `updateValidatorSetV2` 的选择器（`0x6550d581`），只有 `deposit` 之类。
+2. 正常情况下 go-bsc 本会替换它，但内置的升级表按创世哈希索引，只有
+   `mainnet`/`chapel` 两个条目（`feynmanUpgrade[defaultNet]` 为 `nil`，
+   `applySystemContractUpgrade` 对 nil 表直接 no-op）。自定义链因此永远不会被升级。
+
+于是该调用落到合约分发器的 default 分支，以 `invalid opcode: INVALID`
+**在组装区块的过程中**停机。这不是一笔可以跳过的失败交易——区块根本组装不出来，
+矿工会永远重试，链彻底死亡，只能清掉数据目录重来。注意这**不只是"停机后重启"的问题**：
+只要跨过 UTC 自然日边界就会触发，不管链是否在运行。所以普通的 7×24 私网会在
+1 号块之后 24 小时内必然死掉。
+
+修复方式是把这条规则关掉。`isBreatheBlock` 属于共识规则，**每个节点**必须得出
+相同判定，而两个客户端都为此提供了覆盖开关：
+
+| 客户端 | 覆盖方式 |
+|---|---|
+| go-bsc | `--override.breatheblockinterval <秒>` |
+| reth-bsc | `BREATHE_BLOCK_INTERVAL=<秒>`（环境变量） |
+
+`privnet.sh` 给全部 4 个节点传同一个 `BREATHE_BLOCK_INTERVAL`，并默认设为 `1e15`
+——大于任何真实时间戳，因此任意两块都不可能落入不同的时间桶。具体用法：
+
+```bash
+# 默认：关闭呼吸块，可无限期运行
+./privnet.sh mixed
+
+# 若确实想按主网节奏（86400）做每日刷新；则每个 UTC 午夜都需要清数据目录重启
+BREATHE_BLOCK_INTERVAL=86400 ./privnet.sh mixed
+```
+
+已端到端验证：`--override.breatheblockinterval=120` 时，链在 1 号块后两分钟内即停滞；
+`1e15` 时链可以持续跨过同样边界，4 个节点的 hash 与 `stateRoot` 逐字节一致，
+且 `just e2e-evmdb-bsc` 与 `just e2e-fork-db-bsc` 全部通过。切勿在已运行的链上
+修改该间隔——区块布局会分叉。
+
+用 `just privnet-verify-breathe` 可复跑该验证（约 8 分钟）：它会把网络启动两次，
+一次用 120s 间隔（必须停滞），一次用当前默认值（必须持续出块），最后检查 4 个
+节点的 hash 与 `stateRoot` 是否仍然一致。`--case-b` 只跑后半段。脚本退出时会
+停机并清空数据目录，所以请在不依赖在线私网时运行。

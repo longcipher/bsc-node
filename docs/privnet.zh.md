@@ -206,3 +206,50 @@ bootnode（实测：大量外拨 + 被 ban）。现返回显式空集合；
 - Jenner（BEP-706/714）只在 develop 存在且**仅 qanet**（2026-10-05 已激活）；
   主网/测试网未排期，两端 BEP-714 backoff 镜像一致——本次测试（无时间分叉）
   无互操作影响。
+
+## 11. 每日呼吸块问题，以及私网为什么必须关掉它（2026-10-13）
+
+**呼吸块**指父块处于上一个 UTC 自然日的块（`isBreatheBlock`，
+`consensus/parlia/feynmanfork.go`）。它是 `updateValidatorSetV2` 唯一会执行的地方。
+在本私网上它是致命的，值得记录：前 24 小时完全看不出来，之后永久失效。
+
+实测现象：go1 正常服务 RPC、进程存活，但一个块都出不来——每秒一条
+`apply message failed msg= err="invalid opcode: INVALID"`，永不停止，
+`eth_blockNumber` 冻结。原因按顺序：
+
+1. **`0x1000` 上部署的是 Feynman 之前的字节码。** `bsc-genesis-contract` 的
+   `genesis-dev.json` 部署的 `BSCValidatorSet`，其运行时代码里有 `deposit`
+   选择器，但没有 `updateValidatorSetV2`（`0x6550d581`）。已对节点核实：
+   `eth_getCode` 在 tip 返回的正是创世 `alloc` 里定义的同样 28 663 字节。
+2. **go-bsc 永远不会升级它。** `upgradeBuildInSystemContract` 按创世哈希选表，
+   自定义链落到 `defaultNet`，而 `feynmanUpgrade` 只有 `mainnet`/`chapelNet`，
+   于是 `applySystemContractUpgrade(nil, …)` 只打一行 `Empty upgrade config`
+   就返回。reth-bsc 有同样的缺口（`src/system_contracts/` 也没有自定义链表）。
+3. **该调用因此落到合约分发器的 default 分支**，其编译结果是 `INVALID`，
+   而且发生在 `finalizeAndAssemble` 内部——所以不是"块里含一笔失败交易"，
+   而是根本产不出块。
+
+这不是"停机后重启"的副产物：只要跨过 UTC 自然日就会触发，所以持续运行的
+7×24 私网会在 1 号块之后 24 小时内必然遇到。1 号块本身能活下来，只是因为
+`IsOnFeynman` 会跳过第一个 Feynman 激活块——这也解释了为什么新启动的私网
+看起来一切正常，而故障要过很久才现身。
+
+两个客户端都提供了该间隔的覆盖开关，这就是完整的修复：
+
+| 客户端 | 覆盖方式 |
+|---|---|
+| go-bsc | `--override.breatheblockinterval <秒>`（`cmd/geth/config.go`） |
+| reth-bsc | `BREATHE_BLOCK_INTERVAL=<秒>`（`src/consensus/parlia/util.rs`） |
+
+实测（`privnet/ab-start.sh`，4 个节点均一致设置）：
+
+| 间隔 | 结果 |
+|---|---|
+| `120` | 1 号块后两分钟内停滞，同样是 `invalid opcode: INVALID` |
+| `1e15` | 跨过同样边界继续运行；4 节点 hash + `stateRoot` 逐字节一致；所有日志 0 `ERROR` |
+
+`privnet.sh` 现在给每个节点传同一个 `BREATHE_BLOCK_INTERVAL`，默认 `1e15`。
+关掉它对私网是正确的：验证人集合永不变，每日刷新无事可做。两点注意：
+该间隔属于共识，所有节点必须一致（且 reth 在进程启动时读取，只能靠重启修改）；
+另外 `EstimateGasReservedForSystemTxs` 会返回软上限而非硬上限，
+这只会给用户交易**腾出**更多 gas。
