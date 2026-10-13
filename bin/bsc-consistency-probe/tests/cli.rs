@@ -16,7 +16,7 @@ use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener},
     process::{Command, Output, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     thread,
@@ -35,6 +35,8 @@ const FIXTURE: &str = include_str!("fixtures/bsc_mainnet_proof.json");
 struct MockRpc {
     addr: SocketAddr,
     served: Arc<AtomicUsize>,
+    /// Method names in arrival order, so a test can assert *what* was asked.
+    methods: Arc<Mutex<Vec<String>>>,
 }
 
 impl MockRpc {
@@ -56,21 +58,24 @@ impl MockRpc {
         let routes: Arc<Vec<(String, Value)>> =
             Arc::new(routes.iter().map(|(k, v)| ((*k).to_string(), v.clone())).collect());
         let served = Arc::new(AtomicUsize::new(0));
+        let methods = Arc::new(Mutex::new(Vec::new()));
 
         let srv_routes = Arc::clone(&routes);
         let srv_served = Arc::clone(&served);
+        let srv_methods = Arc::clone(&methods);
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
                 let routes = Arc::clone(&srv_routes);
                 let served = Arc::clone(&srv_served);
+                let methods = Arc::clone(&srv_methods);
                 thread::spawn(move || {
-                    let _ = serve(&mut stream, &routes, limit, &served);
+                    let _ = serve(&mut stream, &routes, limit, &served, &methods);
                 });
             }
         });
 
-        Self { addr, served }
+        Self { addr, served, methods }
     }
 
     /// The `http://host:port` URL to point the CLI at.
@@ -82,6 +87,16 @@ impl MockRpc {
     fn served(&self) -> usize {
         self.served.load(Ordering::SeqCst)
     }
+
+    /// The methods that were requested, in arrival order.
+    fn methods(&self) -> Vec<String> {
+        self.methods.lock().map(|g| g.clone()).unwrap_or_default()
+    }
+
+    /// Whether `method` was requested at least once.
+    fn asked_for(&self, method: &str) -> bool {
+        self.methods().iter().any(|m| m == method)
+    }
 }
 
 /// Handles one connection: reads the request, answers the routed result.
@@ -90,6 +105,7 @@ fn serve(
     routes: &[(String, Value)],
     limit: Option<usize>,
     served: &AtomicUsize,
+    methods: &Mutex<Vec<String>>,
 ) -> std::io::Result<()> {
     let request = read_request(stream)?;
     let Some(req) = request else { return Ok(()) };
@@ -97,6 +113,9 @@ fn serve(
 
     let id = req.get("id").cloned().unwrap_or(Value::Null);
     let method = req.get("method").and_then(Value::as_str).unwrap_or_default().to_string();
+    if let Ok(mut log) = methods.lock() {
+        log.push(method.clone());
+    }
 
     let body = match limit {
         Some(limit) if count > limit => json!({
@@ -458,6 +477,93 @@ fn compare_fails_fast_when_an_endpoint_never_answers() {
     }
 }
 
+#[test]
+fn compare_with_receipts_agrees_and_exits_zero() {
+    // `--receipts` opts into a second comparison per block, so the endpoint has
+    // to be asked for them at all before anything can agree or disagree.
+    let go = MockRpc::start(&compare_routes("0xabc"));
+    let rust = MockRpc::start(&compare_routes("0xabc"));
+
+    let out = run(&[
+        "compare",
+        "--go",
+        &go.url(),
+        "--rust",
+        &rust.url(),
+        "--start",
+        "100",
+        "--end",
+        "102",
+        "--receipts",
+    ]);
+
+    assert!(
+        out.status.code() == Some(0),
+        "exit: {:?}, stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // eth_getBlockReceipts must actually have been requested.
+    assert!(go.asked_for("eth_getBlockReceipts"), "go was never asked for receipts");
+    assert!(rust.asked_for("eth_getBlockReceipts"), "rust was never asked for receipts");
+}
+
+#[test]
+fn compare_without_receipts_never_asks_for_them() {
+    // The comparison is opt-in, so an unflagged run must not spend the calls.
+    let go = MockRpc::start(&compare_routes("0xabc"));
+    let rust = MockRpc::start(&compare_routes("0xabc"));
+
+    let out = run(&[
+        "compare",
+        "--go",
+        &go.url(),
+        "--rust",
+        &rust.url(),
+        "--start",
+        "100",
+        "--end",
+        "100",
+    ]);
+
+    assert!(out.status.code() == Some(0), "exit: {:?}", out.status);
+    assert!(!go.asked_for("eth_getBlockReceipts"), "an unflagged run must not fetch receipts");
+}
+
+#[test]
+fn compare_with_receipts_detects_a_receipt_divergence() {
+    // A receipts difference must fail the run even when the headers match,
+    // which is the whole reason the flag exists.
+    let go = MockRpc::start(&compare_routes("0xabc"));
+    // The router answers the first match for a method, so the receipts route
+    // has to be replaced rather than appended, or the honest one still wins.
+    let mut lying: Vec<(&str, Value)> =
+        compare_routes("0xabc").into_iter().filter(|(m, _)| *m != "eth_getBlockReceipts").collect();
+    lying.push((
+        "eth_getBlockReceipts",
+        json!([{ "status": "0x1", "gasUsed": "0x10",
+                                                 "transactionHash": "0xaa", "logs": [{}] }]),
+    ));
+    let rust = MockRpc::start(lying.as_slice());
+
+    let out = run(&[
+        "compare",
+        "--go",
+        &go.url(),
+        "--rust",
+        &rust.url(),
+        "--start",
+        "100",
+        "--end",
+        "100",
+        "--receipts",
+    ]);
+
+    assert!(out.status.code() == Some(1), "exit: {:?}", out.status);
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("receipt count"), "unexpected stdout: {stdout}");
+}
+
 // ----------------------------------------------------------------------
 // truth
 // ----------------------------------------------------------------------
@@ -536,6 +642,37 @@ fn truth_makes_no_json_rpc_call_before_parsing_addresses() {
     assert_eq!(endpoint.served(), 0, "a bad checksum must not reach the endpoint");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("EIP-55"), "unexpected stderr: {stderr}");
+}
+
+#[test]
+fn truth_accepts_a_single_endpoint() {
+    // The one-client path is the documented "trust Go" mode; it has no second
+    // endpoint, so there is nothing to agree or disagree with.
+    let (block, routes) = truth_routes("present");
+    let endpoint = MockRpc::start(&routes);
+
+    let out = run(&[
+        "truth",
+        "--endpoint",
+        &endpoint.url(),
+        "--addresses",
+        "0x55d398326f99059fF775485246999027B3197955",
+        "--storage-slots",
+        "0x0",
+        "--block",
+        &block,
+    ]);
+
+    assert!(
+        out.status.code() == Some(0),
+        "exit: {:?}, stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = stdout_of(&out);
+    assert!(stdout.contains("[endpoint]"), "the endpoint must be labelled: {stdout}");
+    assert!(stdout.contains("OK"), "unexpected stdout: {stdout}");
+    assert!(!stdout.contains("CROSS-CLIENT"), "unexpected stdout: {stdout}");
 }
 
 #[test]
