@@ -1,245 +1,31 @@
-# Rust Workspace Agent Instructions
+# BSC Node Agent Instructions
+
+## Non-negotiables
+
+- Surgical edits only: every changed line must trace to the request. No drive-by refactors, no reformatting untouched code, no deleting pre-existing dead code (mention it instead).
+- Fix root causes. Never silence a warning, weaken a check, or patch a symptom to make a gate pass.
+- Never report completion while any `just` gate below fails. Report the failure verbatim and stop.
+- Stop and ask when a request is ambiguous, conflicts with existing conventions, or requires credentials, publishing, or destructive operations.
+- When a correction reveals a missing rule, add one specific rule here ("always X for Y", never "be careful with Y"); delete rules that never catch real errors.
 
 ## Scope
 
-- This template targets Rust workspaces only.
-- `bin/` contains CLI binary crates.
-- `crates/` contains reusable library crates.
-- No frontend/web-framework-specific assumptions.
+- This workspace cross-validates the two BSC client implementations: Go `bsc` (geth-bsc) and Rust `reth-bsc`. The only crate is `bin/bsc-consistency-probe`; `crates/` is empty and reserved for future libraries.
+- The probe has two subcommands. `compare` diffs block headers field by field at the same height (`stateRoot`, `receiptsRoot`, `transactionsRoot`); `truth` verifies with `eth_getProof` that account and storage leaves are really committed under the reported `stateRoot`.
+- `privnet/` is the reproducible private-network lab: `genesis.json`, `privnet.sh`, `ab-breathe-interval.sh`. `docs/bsc-diff.md` and `docs/privnet.md` hold the long-form dual-client analysis.
+- The `*.zh.md` documents are deliberate Chinese translations. The English files stay English; keep the two in sync when one changes.
+- English only in code, comments, docs, and commit messages.
 
-## Modern Rust Features (Edition 2024+)
+## Execution
 
-This template uses Rust edition 2024 with resolver "3" and tracks the latest `nightly`
-channel (see `rust-toolchain.toml`). Prefer stable language features by default; reach for
-nightly-only features only when they clearly earn their place (and gate them behind a
-justified `#![feature(...)]`).
+- Parallelize aggressively: dispatch subagents for independent research, exploration, and implementation.
+- NEVER run two `cargo` commands at once; `target/` is file-locked. Finish edits first, then run cargo.
+- NEVER use `git worktree`. Edit the current branch in place.
+- TDD for behavior changes: failing test first, smallest change to pass, then run `just mutation` and fix surviving mutants.
 
-### Stable since 1.81–1.88 (use freely)
+## Verification loop
 
-- **`#[expect]` over `#[allow]`**: Use `#[expect(lint, reason = "...")]` for lints that
-  should never fire. Note this template sets `clippy::allow_attributes = "deny"`, so bare
-  `#[allow(...)]` is a hard error — `#[expect]` is the only accepted escape hatch.
-- **Let-else**: `let PATTERN = EXPR else { ... }` for early returns instead of `match`.
-- **Inline format args**: `format!("{name}")` over `format!("{}", name)` (captured
-  automatically in edition 2024, so `clippy::uninlined_format_args` no longer applies).
-- **Async closures**: `async |args| body` (stable in 1.85).
-- **`impl Trait` in `let`**: `let f: impl Fn() = ...;` to name opaque closures/types locally.
-- **`let`-chains**: `if let a = x && let b = y { ... }` without nesting.
-- **Lazy init**: `std::sync::LazyLock`, `std::cell::LazyCell`, and `std::sync::OnceLock`
-  instead of `lazy_static`/`once_cell`.
-- **`Cell::update` / `Cell::get_mut`**: mutable access through a shared reference.
-- **`offset_of!`**: `std::mem::offset_of!(Struct, field)` for field offsets without `unsafe`.
-- **C-string literals**: `c"..."` and `CStr` interop when FFI is involved.
-- **Array chunks**: `array.into_iter().array_chunks()` for fixed-size chunking.
-- **`slice::chunk_by`**: group contiguous runs without copying.
-- **Precise capturing / RPIT**: `impl Trait + use<>` to capture only the lifetimes you name.
-- **Const evaluation**: prefer `const fn` and `const { ... }` blocks where possible.
-
-### Nightly-only (opt in with `#![feature(...)]` and a comment)
-
-- **`gen` blocks / `async gen`**: `gen { ... yield x; }` for iterator/coroutine producers.
-- **`try` blocks**: `try { ... }` to scope early `?` returns.
-- **`yeet`**: `do yeet value;` as an expression-form early return inside `try`.
-- **`allocator_api`**: custom allocators for `Vec`/`Box` (`Vec::new_in(allocator)`).
-- **`portable_simd`**: `std::simd` for explicit vectorization.
-- **Unsafe attributes**: `#[unsafe(no_mangle)]`, `#[unsafe(export_name)]` instead of the bare forms.
-
-## Execution Strategy
-
-- Maximize parallelism by dispatching subagents aggressively and consuming tokens freely to complete tasks faster.
-
-## Tool Usage & Commands
-
-- **NEVER execute `cargo` commands in parallel.** Rust's cargo uses strict file locks on the `target/` directory.
-- ALWAYS run `cargo check`, `cargo build`, or `cargo test` sequentially. Wait for one to finish before starting the next.
-- When fixing errors, execute the file `Write`/`Edit` tool FIRST, wait for it to succeed, and only THEN run `cargo` commands to verify. Do not parallelize file edits with cargo builds.
-
-## Build Configuration
-
-- Ensure `.cargo/config.toml` contains:
-  ```toml
-  [build]
-  rustc-wrapper = "kache"
-  ```
-  This wraps `rustc` with [kache](https://github.com/nicholasgasior/kache) to cache compilation artifacts and significantly speed up incremental builds.
-
-## Cargo Workspace Rules (Critical)
-
-1. Never manually type dependency versions in `Cargo.toml`; use `cargo add`.
-2. Add shared, workspace-level dependencies by editing the root `Cargo.toml`
-   `[workspace.dependencies]` table directly (numeric versions only, no features):
-
-   ```toml
-   # root Cargo.toml
-   [workspace.dependencies]
-   serde = { version = "1", features = ["derive"] }
-   ```
-
-3. Add a dependency to a specific crate with `cargo add`:
-
-   ```bash
-   cargo add <crate> -p <crate-name>
-   ```
-
-   Then reference a shared dep from that crate with `dep = { workspace = true }`
-   (optionally overriding features per crate when needed).
-4. Root `[workspace.dependencies]` must use numeric versions only.
-5. Root `[workspace.dependencies]` must not carry features by default.
-6. Sub-crates must use `workspace = true` for `version`, `edition`, `license`, `repository`, and shared dependencies.
-
-## Preferred Dependencies
-
-When introducing new dependencies, prefer these crates unless compatibility requires a different choice:
-
-```
-clap, config, eyre, proptest, serde, thiserror, tokio, tracing, tracing-subscriber,
-tracing-opentelemetry, opentelemetry, opentelemetry-otlp, sqlx, utoipa, utoipa-swagger-ui,
-arc-swap, hpx, scc, winnow, shadow-rs, ecdysis
-```
-
-Always use the latest stable version available on crates.io. Run `cargo add <crate> -p <crate-name>`
-to add to a crate (it resolves to the latest compatible version), and run `cargo update` to
-refresh the lockfile. For shared deps, add them to `[workspace.dependencies]` in the root
-`Cargo.toml`.
-
-## Dependency Management
-
-- Use `cargo add` to add dependencies (resolves to latest version automatically).
-- Use `cargo update` to update all dependencies to latest compatible versions.
-- Use `cargo audit` to check for security vulnerabilities.
-- Use `cargo deny` to check for license and policy compliance.
-- Use `cargo tree` to analyze dependency graphs.
-- Use `cargo outdated` to find outdated dependencies.
-- Pin critical dependencies with exact versions (`=1.2.3`) when necessary.
-- Use `[patch]` section for local development of dependencies.
-
-## Dependency Priority and Forbidden Choices
-
-- HTTP client preference: `hpx` (with `rustls`) over `reqwest`.
-- Concurrent map/set preference: `scc` over `dashmap` and `RwLock<HashMap<...>>`.
-- Parsing preference: `winnow` or `pest` over ad-hoc manual parsing.
-- Read-heavy shared state: `arc-swap` over `RwLock`.
-- Forbidden by default: `anyhow`, `log`, `reqwest`, `dashmap`.
-
-## Engineering Principles
-
-### Rust Implementation Guidelines
-
-1. Error handling:
-   - Application layer: `eyre`.
-   - Library layer: `thiserror`.
-2. Database (`sqlx`):
-   - Prefer runtime queries (`sqlx::query_as`).
-   - DB structs should derive `sqlx::FromRow`.
-   - Avoid compile-time `sqlx::query!` macros by default.
-3. Concurrency:
-   - Prefer lock-free/container-first approaches (`scc`, `ArcSwap`).
-   - Avoid `Arc<Mutex<T>>` when better alternatives are available.
-4. Observability:
-   - Logging: `tracing` only.
-   - Metrics/traces: OpenTelemetry OTLP gRPC.
-   - Prometheus should not be the default instrumentation path.
-5. API docs:
-   - Generate OpenAPI with `utoipa` when exposing HTTP APIs.
-6. Configuration:
-   - Use the `config` crate and external configuration files (prefer TOML).
-7. Binaries:
-   - Use `ecdysis` for graceful restart/reload flows in daemon/server binaries.
-8. Safety:
-   - Use `unsafe` only when strictly necessary and document the safety invariants.
-
-### Key Design Principles
-
-- Modularity: Design each crate so it can be used as a standalone library with clear boundaries and minimal hidden coupling.
-- Performance: Prefer architectures that support parallelism, memory-mapped I/O for large read-heavy workloads, optimized data structures, and lock-free data types.
-- Extensibility: Use traits and generic types to support multiple implementations without invasive refactors.
-- Type Safety: Maintain strong static typing across interfaces and internals, with minimal use of dynamic dispatch.
-
-### Performance Considerations
-
-- Avoid allocations in hot paths; prefer references and borrowing to reduce allocation and copy overhead.
-- Use `rayon` for CPU-bound parallel processing.
-- Use `tokio` async/await for I/O-bound concurrency.
-
-### Concurrency and Async Execution
-
-- Prefer atomic types (`AtomicUsize`, `AtomicBool`, etc.) with explicit `Ordering` for simple shared state.
-- Use `scc` for highly concurrent maps/sets; avoid `Arc<RwLock<HashMap<...>>>` and `Arc<Mutex<HashMap<...>>>` on hot paths.
-- Use `moka` for concurrent caches instead of custom LRU implementations.
-- Prefer `parking_lot::{Mutex, RwLock}` over `std::sync` locks for synchronous locking.
-- Release `std::sync::Mutex` and `parking_lot::Mutex` guards before hitting any `.await` point.
-- Use `tokio::sync::Mutex` for locks that span across `.await` points.
-- Use `tokio::task::spawn_blocking` for CPU-bound work and blocking I/O.
-- Batch work or use bounded worker patterns instead of spawning massive volumes of tiny Tokio tasks.
-- Channel selection:
-  - Async-to-Async: `tokio::sync::mpsc` / `tokio::sync::broadcast`
-  - Sync/MPMC: `crossbeam-channel` or `flume`
-  - Avoid `std::sync::mpsc`
-
-### Memory and Allocation
-
-- For binary server applications, configure `tikv-jemallocator` or `mimalloc`.
-- For trusted internal hash keys, prefer `ahash` or `rustc-hash` over default SipHash-based maps.
-- Use `compact_str` or `smol_str` for small-string-heavy paths.
-- Prefer `beef::Cow` over `std::borrow::Cow` when minimizing footprint.
-- Use `bytes::Bytes` / `bytes::BytesMut` for network buffers; pass `Bytes` instead of cloning `Vec<u8>`.
-- For critical serialization hot paths, prefer `rkyv` or `zerocopy`; reserve `serde_json` for config and non-critical APIs.
-
-### Type and Layout
-
-- Order struct fields from largest to smallest unless stronger semantic grouping is required.
-- Use `#[repr(C)]` / `#[repr(packed)]` only for FFI or fixed protocol layout requirements.
-- Keep error types compact on hot paths; box large error payloads when needed to reduce `Result<T, E>` size.
-- Prefer typestate-style APIs for compile-time state transitions instead of runtime state checks.
-
-### Tooling and Hot Paths
-
-- Keep code clean under `clippy::pedantic`, `clippy::nursery`, and `clippy::cargo` (allow `missing_errors_doc` for non-public APIs when needed).
-- Use `#[expect(lint)]` instead of `#[allow(lint)]` for lints that should never fire.
-- Use `#[inline]` for tiny methods called in hot loops or on every request, especially across crate boundaries.
-- Mark cold error paths with `#[cold]` and `#[inline(never)]` when it improves hot-path instruction locality.
-- Use `cargo nextest` for parallel test execution (faster than `cargo test`).
-- Use `cargo llvm-cov` for code coverage (faster than `tarpaulin`).
-- Use `cargo miri` to detect undefined behavior in unsafe code.
-- Use `cargo asm` to inspect generated assembly for hot paths.
-
-### Common Pitfalls
-
-- Keep async tasks non-blocking; offload CPU-bound work to `spawn_blocking` or `rayon`.
-- Handle errors explicitly and consistently with the `?` operator and concrete error types.
-
-### What to Avoid
-
-- Incomplete implementations: finish features before submitting.
-- Large, sweeping changes: keep changes focused and reviewable.
-- Mixing unrelated changes: keep one logical change per commit.
-
-## Workspace Configuration
-
-- This workspace uses `resolver = "3"` (required for edition 2024).
-- Workspace dependencies are defined in root `Cargo.toml` under `[workspace.dependencies]`.
-- Sub-crates use `workspace = true` for version, edition, and shared dependencies.
-- Lints are configured at workspace level under `[workspace.lints.*]`.
-- Build profiles are optimized: dev uses `codegen-units = 16` for faster compilation, release uses `lto = "fat"` and `codegen-units = 1` for maximum optimization.
-- The workspace uses `rust-toolchain.toml` to pin the Rust version and required components.
-
-## Development Workflow
-
-When fixing failures, identify root cause first, then apply idiomatic fixes instead of suppressing warnings or patching symptoms.
-
-## Parallelization and Resource Utilization
-
-- **Use as many subagents and as much token budget as needed** to complete tasks efficiently. Parallelize independent work aggressively and maximize context utilization. Spawn subagents for independent research, code exploration, and implementation tasks to reduce latency and improve throughput.
-
-Use test-driven development for behavior changes:
-
-- **Git Restrictions:** NEVER use `git worktree`. All code modifications MUST be made directly on the current branch in the existing working directory.
-- drive implementation with failing crate-local unit tests and `proptest` properties in the affected crate,
-- keep `proptest` in the normal `cargo test` loop instead of creating a separate property-test command,
-- treat `cargo-fuzz` as conditional planning work rather than baseline template setup,
-- after the inner loop is green, run `just mutation` (cargo-mutants) and fix any surviving mutants.
-
-After each feature or bug fix, run:
+After each feature or bug fix, in order; any failure means the task is not done:
 
 ```bash
 just format
@@ -248,24 +34,51 @@ just test
 just mutation
 ```
 
-If any command fails, report the failure and do not claim completion.
+`just lint` is the gate: `typos`, `rumdl check`, `cargo sort -w -g -c` for TOML key order, `cargo +nightly fmt --check`, `cargo +nightly clippy -D warnings` and `cargo shear` for unused dependencies. CI installs exactly `just`, `cargo-shear`, `cargo-sort`, `typos-cli`, `rumdl`, `cargo-llvm-cov` and `cargo-nextest`, so `just lint` must not call anything else.
 
-## Testing Requirements
+## Rust probe rules
 
-- Unit tests: colocate with implementation (`#[cfg(test)]`).
-- Use `cargo test` as the TDD inner loop; write a failing test first, then implement the smallest change that makes it pass.
-- Prefer example-based unit tests for named business cases and edge cases, and reserve `proptest` for invariants that should hold across many generated inputs.
-- Property tests: colocate `proptest` coverage with the crate logic it exercises so it runs through the ordinary `cargo test` path.
-- Cover boundary conditions (empty inputs, zero values, maximum sizes) with explicit assertions.
-- Mutation testing: run `just mutation` (cargo-mutants) and fix any surviving mutants to keep the mutation score high.
-- Benchmarks: only plan or add Criterion when the scope includes an explicit latency SLA, throughput target, or known hot path in a specific crate.
-- Benchmark workflow: when benchmarking is justified, add Criterion only in the affected crate instead of pre-seeding benchmark scaffolding across the workspace.
-- Fuzz tests: only plan or add `cargo-fuzz` when a crate parses hostile input, implements protocols, decodes binary formats, or contains meaningful `unsafe` code.
-- Fuzz workflow: when fuzzing is justified, generate the standard layout in the affected crate with `cargo fuzz init`, then run targets with `cargo fuzz run <target>` instead of pre-seeding a `fuzz/` directory in every starter.
-- For `/pb-plan` work, mark benchmarking as `conditional` or `N/A` unless the scope explicitly includes a performance requirement or hot path, and mark fuzzing as `conditional` or `N/A` unless the scope explicitly includes parser-like, protocol, binary-decoding, or `unsafe`-heavy code.
-- Integration tests: place in crate-level `tests/`.
-- Add tests for behavioral changes and public API changes.
+- `rust-toolchain.toml` pins nightly, so use `cargo +nightly fmt` and `cargo +nightly clippy`. Do not invent stable variants.
+- `.cargo/config.toml` sets `rustc-wrapper = "kache"`, which breaks clippy's lints and `--fix`. Invoke clippy with `RUSTC_WRAPPER=` unset, exactly as the Justfile does.
+- Workspace lints deny `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `dbg_macro` and `allow_attributes`. The CLI lifts the print lint with `#![expect(clippy::print_stdout)]` at the top of `main.rs`; use `#[expect(lint, reason = "...")]`, never a bare `#[allow(...)]`.
+- `clippy.toml` carries the thresholds (`too-many-lines-threshold = 120`, `cognitive-complexity-threshold = 30`, `max-struct-bools = 4`). Keep new code inside them instead of widening the file.
+- `.cargo/mutants.toml` deliberately has no `exclude_globs`: an earlier version excluded every source file and silently turned 168 mutants into zero. Do not add exclusion globs, and keep `skip_calls = ["with_capacity"]` as the only skip.
 
-## Language Requirement
+## Dependency choices
 
-- Documentation, comments, and commit messages must be English only.
+- Errors are `eyre` everywhere; this workspace has no `thiserror`. Never introduce `anyhow`.
+- The HTTP client is `hpx` with rustls, declared per crate because it is not shared. `reqwest` is forbidden.
+- Shared crates live in the root `[workspace.dependencies]` with numeric versions and no features, and are referenced as `dep = { workspace = true }`. Never hand-type a version.
+- The trie and hashing stack is fixed: `rlp` for the encoding, `sha3` for hashing, `primitive-types` for `H256`/`U256`. Replacing any of them changes the proof semantics.
+- `proptest` covers the MPT and protocol code; a regression file lives at `bin/bsc-consistency-probe/proptest-regressions/mpt.txt`. Keep it committed when a case shrinks.
+- Forbidden by default: `anyhow`, `reqwest`, `log`, `dashmap`, `std::sync::mpsc`.
+
+## Probe behaviour rules
+
+- `--workers` bounds the load on a public endpoint: one block probe issues four JSON-RPC calls, so a wide `--start..--end` range consumes capacity in proportion to `--workers`.
+- Results are reported in ascending height order no matter which endpoint answers first.
+- A height whose probe fails is reported as a diff row of its own. Dropping it would understate the failures the caller asked about.
+- Any inconsistent or unprobeable block makes the exit status non-zero, so `compare` works as a CI gate. The summary line is always printed first.
+- `--timeout-ms` covers the whole exchange, not just the send, so a node that accepts the connection and then goes quiet fails the block instead of hanging the run.
+- `--start` above `--end` is rejected: an empty range would print `0/0 blocks consistent` and exit zero, which is indistinguishable from a pass.
+- In `truth` mode, trust comes from the endpoint that serves the proof. Pass `--go` alone for a Go-trusted check, or `--go` and `--rust` for a three-way cross-check.
+
+## Code conventions
+
+- Merkle proof verification follows the MPT rules exactly: `rlp` for the trie encoding, `sha3` for hashing, `primitive-types` for `H256`/`U256`. A shortcut here silently accepts an invalid proof.
+- Storage slots and addresses are hex-encoded; keep the `0x` prefix handling in `parse_slot_list` and `parse_address_list` consistent.
+- JSON-RPC payloads go through `serde_json::Value`; do not introduce a second JSON stack.
+- The crate is a binary, so unit tests live in `#[cfg(test)]` modules and integration tests in `bin/bsc-consistency-probe/tests/`. `mock_rpc.rs` is the test-only server used by those tests.
+- `crates/` stays empty until a real library boundary exists; the workspace `members` list is `bin/*`.
+
+## Private network rules
+
+- One shared genesis: `chainId: 1337`, Parlia `period: 3s`, `epoch: 200`, one development validator. Never reuse that key on mainnet or testnet.
+- `privnet.sh` modes are `go`, `rust` and `mixed`; the actions are `status`, `stop`, `clean`, `handover-to-rust`, `handover-to-go` and `system-contracts`. `GETH_BIN`, `RETH_BIN` and `PRIVNET_DIR` override the defaults.
+- The Go follower needs `--syncmode full`; the default snap mode fails on tiny chains with `missing trie node`.
+- Rust nodes need `-d` (no discovery): a custom chain has no bootnodes, so the node dials the public internet and gets banned.
+- Rust mining must be enabled at startup with `--mining.enabled --mining.private-key`. The `miner_start` RPC is accepted but does not start the sealing loop, which is why `handover-to-go` restarts the miner instead.
+- Breathe blocks kill the chain, so the script passes `BREATHE_BLOCK_INTERVAL=1e15` to every node. Never change that interval on a running chain: the block layout forks.
+- The chain stalls near block 199 because the shared genesis deploys no system contracts, so neither client can assemble the epoch-200 validator set. Both stay alive and keep serving RPC; restart from a fresh data directory for longer runs.
+- Run exactly one miner per validator key. Use the handover actions to move block production.
+- `just privnet-verify-breathe` is the A/B regression for the daily breathe block: case A shrinks the interval and the chain must stall, case B proves the shipped default keeps producing with all four nodes agreeing.

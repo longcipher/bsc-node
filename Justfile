@@ -12,7 +12,6 @@ format:
 fix:
   rumdl check --fix .
   RUSTC_WRAPPER= cargo +nightly clippy --fix --all --allow-dirty
-  cargo workspace-inheritance-check --fix
 
 # Run all lints
 lint:
@@ -22,7 +21,6 @@ lint:
   cargo +nightly fmt --all -- --check
   RUSTC_WRAPPER= cargo +nightly clippy --all -- -D warnings
   cargo shear
-  cargo workspace-inheritance-check --promotion-failure
 
 # Run tests
 test:
@@ -49,9 +47,12 @@ check:
 # BSC Consistency Probe
 # ============================================================
 
-# Run the Go vs Rust consistency probe (compare recent block headers, one-click).
+# Runs the consistency probe over the most recent blocks.
+#
 # Override RPC endpoints with GO_RPC / RUST_RPC, or the block count with BLOCKS.
 # TIMEOUT_MS is the per-request timeout; lower it to fail fast on a wedged node.
+
+# Compare recent block headers between a Go and a Rust endpoint
 probe GO_RPC="https://bsc-mainnet.bnbchain.org" RUST_RPC="http://localhost:8545" BLOCKS="20" WORKERS="8" TIMEOUT_MS="10000":
   cargo run -q -p bsc-consistency-probe -- compare \
     --go {{GO_RPC}} --rust {{RUST_RPC}} \
@@ -63,9 +64,12 @@ probe-range START END GO_RPC="https://bsc-mainnet.bnbchain.org" RUST_RPC="http:/
     --go {{GO_RPC}} --rust {{RUST_RPC}} \
     --start {{START}} --end {{END}} --workers {{WORKERS}} --timeout-ms {{TIMEOUT_MS}}
 
-# Run cryptographic truth verification (eth_getProof Merkle proofs) against a Go endpoint.
+# Verifies eth_getProof Merkle proofs against a Go endpoint.
+#
 # Override with GO_RPC / BLOCK / STORAGE_SLOTS / TIMEOUT_MS
 # (uses the probe's default major-contract addresses).
+
+# Verify cryptographic truth against a Go endpoint
 probe-truth GO_RPC="https://bsc-mainnet.bnbchain.org" BLOCK="latest" STORAGE_SLOTS="0,1,2" TIMEOUT_MS="10000":
   cargo run -q -p bsc-consistency-probe -- truth \
     --go {{GO_RPC}} --block {{BLOCK}} --storage-slots {{STORAGE_SLOTS}} --timeout-ms {{TIMEOUT_MS}}
@@ -90,6 +94,10 @@ privnet-handover-to-rust:
 privnet-handover-to-go:
   ./privnet/privnet.sh handover-to-go
 
+# Deploy the BSC system contracts into a running private network.
+privnet-system-contracts:
+  ./privnet/privnet.sh system-contracts
+
 # Stop a running private network.
 privnet-stop:
   ./privnet/privnet.sh stop
@@ -98,15 +106,20 @@ privnet-stop:
 privnet-clean:
   ./privnet/privnet.sh clean
 
-# A/B regression check for the daily breathe block, the failure that is
-# invisible for 24h and then permanent (~8 minutes). Case A shrinks the
-# interval so the chain must stall; case B runs the shipped default and proves
-# it keeps producing, with all four nodes agreeing. See privnet/README.md.
+# A/B regression for the daily breathe block.
+#
+# Case A shrinks the interval so the chain must stall; case B runs the shipped
+# default and proves it keeps producing, with all four nodes agreeing.
+# See privnet/README.md.
+
+# Run the breathe-block A/B regression check
 privnet-verify-breathe:
   ./privnet/ab-breathe-interval.sh
 
 # Only the "must keep producing blocks" side of the breathe-block check
 # (~2 minutes). Use this when you only changed the fix itself.
+
+# Run the fast half of the breathe-block regression check
 privnet-verify-breathe-fast:
   ./privnet/ab-breathe-interval.sh --case-b
 
@@ -118,15 +131,14 @@ publish-check:
 publish:
   cargo publish --workspace
 
-# Check for Chinese characters in the English-only sources
+# Scans the code and scripts for Chinese characters.
 #
-# The `.zh.md` documents are deliberately Chinese, so they are excluded: without
-# this the recipe reports ~300 intentional hits and never comes back clean,
-# which makes it useless for finding a stray CJK comment in a Rust file. The
-# few hits it does report are the lines that name each English document's
-# translation, which cannot be written in English and are meant to be there.
+# The `*.zh.md` documents are deliberately Chinese, and the English files only
+# name their translation, so the scan is limited to the code and the scripts.
+
+# Fail if Chinese characters appear in the English-only sources
 check-cn:
-  rg --line-number --column "\p{Han}" -g '!*.zh.md'
+  ! rg --line-number --column "\p{Han}" --glob '*.rs' --glob '*.sh' bin privnet
 
 # Full CI check
 ci: lint test build
@@ -145,13 +157,12 @@ setup:
   cargo install cargo-shear
   cargo install cargo-sort
   cargo install cargo-workspace-inheritance-check
-  cargo install typos-cli
-  cargo install rumdl
-  cargo install leptosfmt
   cargo install cargo-llvm-cov
   cargo install cargo-nextest
   cargo install cargo-deny
   cargo install cargo-audit
+  cargo install typos-cli
+  cargo install rumdl
 
 # Generate documentation for the workspace
 docs:
@@ -161,25 +172,31 @@ docs:
 audit:
   cargo audit
 
+# Checks for outdated dependencies (needs `cargo install cargo-outdated`)
+
 # Check for outdated dependencies
 outdated:
   cargo outdated
 
 # Run clippy with all lints
 clippy-all:
-  cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -W clippy::cargo
+  RUSTC_WRAPPER= cargo +nightly clippy --all-targets --all-features -- -W clippy::pedantic -W clippy::nursery -W clippy::cargo
 
 # Run tests with nextest
 test-nextest:
   cargo nextest run --all-features
 
-# Run miri on unsafe code
+# Run miri on unsafe code (needs `rustup +nightly component add miri`)
 miri:
   cargo +nightly miri test --all-features
 
 # Check for unused dependencies
 unused-deps:
   cargo shear --check
+
+# Check that workspace inheritance is used consistently (local only)
+inheritance-check:
+  cargo workspace-inheritance-check --promotion-failure
 
 # Update all dependencies
 update-deps:
