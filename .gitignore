@@ -33,8 +33,9 @@ bun.lockb
 .env.local
 .env.*.local
 
-# BSC private networks (runtime chain data, keystores, node keys)
+# BSC private networks (runtime chain data, keystores, node keys, vote journal)
 privnet/data/
+privnet/voteJournal/
 
 # Leptos
 /site/

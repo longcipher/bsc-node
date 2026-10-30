@@ -152,7 +152,7 @@ start_go_miner() { # start_go_miner <name> <p2p-port> <http-port>
   log "starting Go miner $name (p2p $p2p, http $http)"
   "$GETH_BIN" --datadir "$dir" --networkid 1337 --port "$p2p" \
     --http --http.addr 127.0.0.1 --http.port "$http" \
-    --http.api eth,net,web3,txpool,parlia,miner,admin \
+    --http.api eth,net,web3,txpool,parlia,miner,admin,debug \
     --nodekeyhex "$(cat "$dir/nodekey.hex")" --nodiscover \
     --mine --miner.etherbase "$VALIDATOR_ADDR" \
     --unlock "$VALIDATOR_ADDR" --password "$dir/passfile" \
@@ -195,11 +195,11 @@ start_rust_node() { # start_rust_node <name> <p2p> <http> <authrpc> <trusted-eno
   local args=(node --chain "$GENESIS" --datadir "$dir" --port "$p2p" -d)
   [ -n "$trusted" ] && args+=(--trusted-peers "$trusted")
   args+=(--http --http.addr 127.0.0.1 --http.port "$http"
-    --http.api eth,net,web3,admin,txpool,miner --authrpc.port "$auth")
+    --http.api eth,net,web3,admin,txpool,miner,mev,debug --authrpc.port "$auth")
   if [ "$miner" = "yes" ]; then
     # NOTE: mining must be enabled at startup; the miner_start RPC is a stub
     # and does not start the sealing loop.
-    args+=(--mining.enabled --mining.private-key "0x$VALIDATOR_KEY" --mining.gas-limit 40000000)
+    args+=(--mining.enabled --mining.private-key "0x$VALIDATOR_KEY" --mining.gas-limit 40000000 --bls.private-key "0x0707070707070707070707070707070707070707070707070707070707070707" --mining.bid-block-enabled)
   fi
   log "starting Rust node $name (p2p $p2p, http $http, miner=$miner)"
   # NOTE: -d (no discovery) is required; otherwise a custom chain falls back
@@ -207,7 +207,7 @@ start_rust_node() { # start_rust_node <name> <p2p> <http> <authrpc> <trusted-eno
   # BREATHE_BLOCK_INTERVAL must match the Go nodes': `isBreatheBlock` decides
   # whether a block carries the `updateValidatorSetV2` system transaction, so a
   # disagreement forks the chain.
-  BREATHE_BLOCK_INTERVAL="$BREATHE_BLOCK_INTERVAL" "$RETH_BIN" "${args[@]}" \
+  BSC_DEBUG_BUILDER=true BREATHE_BLOCK_INTERVAL="$BREATHE_BLOCK_INTERVAL" "$RETH_BIN" "${args[@]}" \
     >"$dir/node.out" 2>"$dir/node.log" &
   echo $! > "$dir/pid"
   wait_rpc "$http" 90
