@@ -78,13 +78,37 @@ probe-truth GO_RPC="https://bsc-mainnet.bnbchain.org" BLOCK="latest" STORAGE_SLO
 # BSC Private Networks (privnet/)
 # ============================================================
 
-# Start a private network: MODE is go, rust, or mixed (binaries via GETH_BIN / RETH_BIN or PATH).
+# Start a private network: MODE is go, rust, mixed, fast, pasteur or multi (binaries via GETH_BIN / RETH_BIN or PATH).
 privnet MODE="mixed":
   ./privnet/privnet.sh {{MODE}}
 
-# Show block height / peer count of a running private network.
+# Rust-only network on mainnet timing: Lorentz/Maxwell/Fermi at genesis, 450 ms blocks.
+privnet-fast:
+  ./privnet/privnet.sh fast
+
+# Rust-only 450 ms network with Osaka/Mendel/Pasteur too, so BEP-675 BidBlockEnabled is true.
+privnet-pasteur:
+  ./privnet/privnet.sh pasteur
+
+# Three Rust validators (turn length 4, 450 ms) for builder tests across turn boundaries.
+privnet-multi:
+  ./privnet/privnet.sh multi
+
+# Show block height / finalized / peer count of a running private network.
 privnet-status:
   ./privnet/privnet.sh status
+
+# Verify a running network (head advances, peers, agreement, finality); non-zero if unhealthy.
+privnet-health:
+  ./privnet/privnet.sh health
+
+# Print shell exports (RPC/IPC endpoints, DEV-ONLY test keys) for a builder e2e script.
+privnet-env:
+  ./privnet/privnet.sh env
+
+# List the DEV-ONLY validator, builder and test accounts the genesis files fund.
+privnet-accounts:
+  ./privnet/privnet.sh accounts
 
 # Hand the block producer role to rust1 (mixed mode).
 privnet-handover-to-rust:
@@ -94,22 +118,34 @@ privnet-handover-to-rust:
 privnet-handover-to-go:
   ./privnet/privnet.sh handover-to-go
 
-# Deploy the BSC system contracts into a running private network.
+# Regenerate every privnet genesis file from the pinned bnb-chain/bsc-genesis-contract (network stopped).
 privnet-system-contracts:
   ./privnet/privnet.sh system-contracts
+
+# Check the committed genesis files are reproducible from the pinned upstream revision.
+privnet-genesis-check:
+  python3 -I privnet/build-genesis.py --check
+
+# Lint the privnet harness: shellcheck every script, compile and ruff-check build-genesis.py.
+privnet-lint:
+  git ls-files -z '*.sh' | xargs -0 shellcheck
+  python3 -I -m py_compile privnet/build-genesis.py
+  ruff check --line-length 120 privnet/build-genesis.py
 
 # Stop a running private network.
 privnet-stop:
   ./privnet/privnet.sh stop
 
-# Stop and wipe private-network chain data.
+# Stop and wipe private-network chain data, vote journals and IPC sockets.
 privnet-clean:
   ./privnet/privnet.sh clean
 
 # A/B regression for the daily breathe block.
 #
 # Case A shrinks the interval so the chain must stall; case B runs the shipped
-# default and proves it keeps producing, with all four nodes agreeing.
+# default and proves it keeps producing, with all four nodes agreeing. Needs
+# go-bsc (exits 77 without it) and runs in its own temp dir on PORT_OFFSET 2000,
+# so a network already running from privnet/data is untouched.
 # See privnet/README.md.
 
 # Run the breathe-block A/B regression check
