@@ -553,12 +553,18 @@ start_go_node() { # start_go_node <node> <miner|follower>
   exe=$(resolve_bin "$GETH_BIN")
   local -a args=(--datadir "$dir" --networkid "$NET_CHAIN_ID" --port "$P2P" --nodiscover --nat none
     --http --http.addr 127.0.0.1 --http.port "$HTTP"
-    --http.api "eth,net,web3,txpool,parlia,miner,admin,debug"
+    --http.api "eth,net,web3,txpool,parlia,miner,mev,admin,debug"
     --ipcpath "$(ipc_path "$name")" --nodekeyhex "$(cat "$dir/nodekey.hex")" --verbosity 3
     --override.breatheblockinterval "$BREATHE_BLOCK_INTERVAL")
   if [ "$role" = miner ]; then
     addr=$(account "validators.0.address")
-    args+=(--mine --miner.etherbase "$addr" --unlock "$addr" --password "$dir/passfile"
+    # go-bsc has no flag for MEV: the validator only accepts BEP-322 bids when the
+    # config file enables it (builders are then added with miner_addBuilder). Its
+    # BEP-675 gRPC service would listen on a fixed port (8552) that collides with
+    # rust1's, so it is turned off; go nodes take BEP-322 bids over HTTP only.
+    printf '[Eth.Miner.Mev]\nEnabled = true\nGRPCDisabled = true\n' >"$dir/mev.toml"
+    args+=(--config "$dir/mev.toml"
+      --mine --miner.etherbase "$addr" --unlock "$addr" --password "$dir/passfile"
       --allow-insecure-unlock --miner.recommit 1s)
   else
     # --syncmode full is required; snap fails on tiny private chains with
