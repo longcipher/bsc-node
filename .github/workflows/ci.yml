@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -50,3 +51,32 @@ jobs:
         with:
           files: coverage/lcov.info
           fail_ci_if_error: false
+
+  # The private-network harness: shell scripts, the genesis generator, and the
+  # committed genesis files it produces. No node binaries are needed.
+  privnet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: shellcheck every shell script
+        run: |
+          shellcheck --version
+          git ls-files -z '*.sh' | xargs -0 --no-run-if-empty shellcheck
+
+      - name: Compile and lint build-genesis.py
+        run: |
+          python3 --version
+          python3 -I -m py_compile privnet/build-genesis.py
+          pipx run ruff check --line-length 120 privnet/build-genesis.py
+
+      - name: Committed genesis files are reproducible from the pinned upstream
+        run: python3 -I privnet/build-genesis.py --check
+
+      - name: privnet.sh argument handling
+        run: |
+          ./privnet/privnet.sh --help >/dev/null
+          set +e
+          ./privnet/privnet.sh no-such-mode; test $? -eq 2 || exit 1
+          GETH_BIN=/nonexistent/geth ./privnet/privnet.sh go; test $? -eq 77 || exit 1
+          GETH_BIN=/nonexistent/geth ./privnet/ab-breathe-interval.sh; test $? -eq 77 || exit 1
