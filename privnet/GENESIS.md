@@ -39,11 +39,15 @@ is the failure recorded in `docs/privnet.md`. With them the chain runs past it.
 
 ## Why block 0 stays pre-London
 
-The timestamp rungs are all set to a past timestamp (QANet's
-`1754967081`) and the block rungs to `1..8`. Both halves are load-bearing, and
-both exist to stop go-bsc and reth-bsc from deriving **different genesis
-hashes from one file**, which is fatal: they refuse to peer, and reth-bsc's
-miner has a peer gate (`is_network_ready_to_mine`), so it never unseals.
+The timestamp ladder is split: the forks that keep 3-second blocks activate at
+a past timestamp (QANet's `1754967081`), while `lorentzTime`, `maxwellTime`,
+`fermiTime` and everything scheduled after them (`osakaTime`, `mendelTime`,
+`pasteurTime`) sit at `9999999999`, past any realistic run. The block rungs are
+`0..8` with `lubanBlock: 0` and `londonBlock: 8`. All three halves are
+load-bearing, and all exist to stop go-bsc and reth-bsc from deriving
+**different genesis hashes from one file**, which is fatal: they refuse to
+peer, and reth-bsc's miner has a peer gate (`is_network_ready_to_mine`), so it
+never unseals.
 
 Four divergences were found and fixed, in this order:
 
@@ -65,9 +69,9 @@ func (c *ChainConfig) IsCancun(num *big.Int, time uint64) bool {
 
 With London at block 8, go-bsc writes a *pre-London* genesis header. reth-bsc
 evaluated its own fork schedule against block 0 and wrote a *Cancun* one.
-Setting `londonBlock: 0` makes both agree, but then `lubanBlock: 0` follows and
-Parlia demands the post-`Luban` `extraData` layout. Keeping London at block 8
-avoids both problems at once.
+Setting `londonBlock: 0` makes both agree, but it also puts Cancun and Prague
+into the genesis header, so London stays at block 8. Luban is block-gated and
+independent of London: it is deliberately at block 0 (see below).
 
 **3. Withdrawals root.** reth-bsc writes an empty withdrawals root whenever
 Shanghai is active at block 0; go-bsc writes one only for non-BSC chains:
@@ -80,11 +84,17 @@ if conf.IsNotInBSC() && conf.IsShanghai(num, g.Timestamp) {
 `shanghaiTime: 0` therefore produced a genesis hash mismatch on its own. It is
 set to the same past timestamp as the rest of the ladder.
 
-**4. `extraData` layout.** At block 0 the chain is pre-`Luban` (`lubanBlock: 6`),
-so the header uses the old 117-byte record — `vanity(32) | address(20) | seal(65)`.
-The post-`Luban` layout is `vanity(32) | count(1) | count * (address(20) | vote(48))`
-plus, from `Bohr`, a turn-length byte, and a 65-byte seal: **167 bytes** for one
-validator. Go reports the mismatch as `unauthorized validator`.
+**4. `extraData` layout.** `lubanBlock: 0` makes Parlia read the post-`Luban`
+record at block 0: `vanity(32) | count(1) | count * (address(20) | vote(48))`,
+the turn-length byte that `Bohr` adds, and a 65-byte seal — **167 bytes** for one
+validator. The pre-`Luban` record was 117 bytes
+(`vanity(32) | address(20) | seal(65)`); parsing one with the other's layout
+fails as `unauthorized validator` or `invalid validators bytes`.
+
+The vote field is the validator's BLS public key: blst's `sk_to_pk()` for the
+key `privnet.sh` passes as `--bls.private-key` (`0x0707..07`). It has to match,
+or the attestations the miner signs are dropped as unauthorized, which is why
+`build-genesis.py` pins it as `VOTE_ADDRESS` next to the key's comment.
 
 ## Fork ordering is strict
 
@@ -96,6 +106,22 @@ present and ordered, or `geth init` fails with e.g.
 ```
 unsupported fork ordering: feynmanFixTime not enabled, but cancunTime enabled at timestamp 0
 ```
+
+Luban at 0 tightens this further: every block fork before it must also be 0,
+and the deferred tail must stay non-decreasing. Two orderings that look
+harmless both fail `geth init`:
+
+```
+unsupported fork ordering: planckBlock enabled at block 5, but lubanBlock enabled at block 0
+unsupported fork ordering: fermiTime enabled at timestamp 9999999999, but osakaTime enabled at timestamp 1754967081
+```
+
+That is why `build-genesis.py` collapses `mirrorSyncBlock` through
+`planckBlock` to 0 and moves `osakaTime`, `mendelTime` and `pasteurTime` to
+`9999999999` alongside the deferred `lorentzTime`/`maxwellTime`/`fermiTime`.
+The deferral is also what keeps 3-second blocks: Lorentz, Maxwell and Fermi
+shrink Parlia's block interval to 1.5s, 0.75s and 0.45s, so a private network
+that activated them would stop matching the `period: 3s` the script assumes.
 
 A `blobSchedule` entry is required for every fork the timestamp ladder activates
 (`invalid chain configuration: missing entry for fork "cancun" in blobSchedule`).
@@ -177,8 +203,9 @@ refuses to seal.
 |---|---|
 | chain id | 1337 |
 | validator | `0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A` (key `0x1111…1111`, **never** on mainnet) |
-| block 0 | pre-London (`bsc-spec`'s `MuirGlacier` era) |
-| block 8+ | `Osaka` — the era BSC mainnet is in today |
+| vote address | `0xa4cafe0e…f41705` (BLS key `0x0707…0707`, **never** on mainnet) |
+| block 0 | pre-London header (`bsc-spec`'s `MuirGlacier` era) with Luban active, 167-byte vote-bearing `extraData` |
+| block 1+ | `Prague` — Lorentz, Maxwell, Fermi, Osaka, Mendel and Pasteur stay deferred at `9999999999` |
 | base fee | `0`, constant (`BaseFeeParamsKind::Constant(1, 1)`) |
 | epoch / period | 200 blocks / 3 s |
 

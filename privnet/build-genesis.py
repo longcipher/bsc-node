@@ -21,22 +21,36 @@ Provenance
 
 Fork schedule
 -------------
-The block-gated rungs are kept *above* zero and the timestamp-gated ones are
-set to a past timestamp. Both halves are load-bearing, and both exist to keep
-go-bsc and reth-bsc agreeing on the genesis hash:
+Block 0 is the one header both clients build from this file, and they disagree
+as soon as a fork changes which fields that header carries:
 
-* If London is active at block 0, Parlia requires the post-`Luban` `extraData`
-  layout (`count | address | vote`), and go-bsc's `IsCancun`/`IsPrague` start
-  returning true at block 0, so go-bsc writes blob/withdrawal fields onto the
-  genesis header.
+* If London is active at block 0, go-bsc's `IsCancun`/`IsPrague` start
+  returning true there, so go-bsc writes blob/withdrawal fields onto the genesis
+  header.
 * reth-bsc writes an empty withdrawals root whenever Shanghai is active at
   block 0, while go-bsc writes one only for non-BSC chains.
 
-Either way the two clients derive different hashes from one file, refuse to
-peer, and reth-bsc's miner (which needs a peer to unseal its peer gate) never
-produces a block. Keeping block 0 pre-London and the timestamp ladder in the
-past gives a chain that is modern from block 1 while genesis stays byte-identical
-across clients.
+Keeping London at block 8 pins the genesis header to its pre-London shape on
+both clients. Luban, in contrast, *is* active at block 0: the post-`Luban`
+`extraData` is what registers each validator's BLS vote address, and that vote
+path is the point of the private network.
+
+Luban at 0 has two ordering consequences, and go-bsc's `CheckConfigForkOrder`
+enforces both -- a chain with `parlia` configured is not exempt:
+
+* Every block-gated fork before Luban collapses to 0 as well. Block forks must
+  be non-decreasing, so `planckBlock: 5` with `lubanBlock: 0` fails with
+  `unsupported fork ordering: planckBlock enabled at block 5, but lubanBlock
+  enabled at block 0`.
+* Timestamp-gated forks must be non-decreasing too. Lorentz, Maxwell and Fermi
+  shrink Parlia's 3-second block interval, so they are deferred past any
+  realistic run; every timestamp fork scheduled after them (Osaka, Mendel,
+  Pasteur) moves to the same value, because deferring only the first three
+  would invert the order against Osaka.
+
+Every other timestamp fork activates at QANet's timestamp: far enough in the
+past that block 1 is already on the modern ladder, and later than the genesis
+timestamp so block 0 stays pre-London.
 """
 
 from __future__ import annotations
@@ -58,22 +72,35 @@ UPSTREAM_FILE = "genesis-dev.json"
 VALIDATOR = "19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A"
 VALIDATOR_BALANCE = "0x33B2E3C9FD0803CE8000000"
 
-# Parlia block layout: 32 bytes vanity, then the validator record, then a
-# 65-byte seal.
+# Parlia record layout after Luban: 32 bytes of vanity, a validator count, one
+# `address(20) | vote address(48)` pair per validator, the turn length (from
+# Bohr) and a 65-byte seal.
 VANITY = "00" * 32
 SEAL = "00" * 65
+TURN_LENGTH = 0
 
-# Block-gated BSC rungs. Everything is at or above 1 so that block 0 itself is
-# pre-Luban; see the module docstring.
+# The BLS public key behind the `--bls.private-key` that privnet.sh hands the
+# Rust miner (`0x0707..07`): blst's min_pk `sk_to_pk()`. The attestation in
+# `extraData` names it, so changing the key in privnet.sh means recomputing this
+# value -- otherwise the votes the miner signs are dropped as unauthorized.
+VOTE_ADDRESS = (
+    "a4cafe0e4602bb74340d45b931591034894f6be4aae24c4e80931d622636bb4da6"
+    "4804903072c655995b423113f41705"
+)
+
+# Block-gated BSC rungs. Everything up to and including Luban is at 0: Luban
+# active at block 0 is what puts the vote address into the genesis `extraData`,
+# and go-bsc rejects a schedule whose block forks decrease. London stays at 8 so
+# block 0 keeps its pre-London header shape; see the module docstring.
 BLOCK_FORKS = {
-    "mirrorSyncBlock": 1,
-    "brunoBlock": 1,
-    "eulerBlock": 2,
-    "nanoBlock": 3,
-    "moranBlock": 3,
-    "gibbsBlock": 4,
-    "planckBlock": 5,
-    "lubanBlock": 6,
+    "mirrorSyncBlock": 0,
+    "brunoBlock": 0,
+    "eulerBlock": 0,
+    "nanoBlock": 0,
+    "moranBlock": 0,
+    "gibbsBlock": 0,
+    "planckBlock": 0,
+    "lubanBlock": 0,
     "platoBlock": 7,
     "berlinBlock": 8,
     "londonBlock": 8,
@@ -94,14 +121,24 @@ TIMESTAMP_FORKS = (
     "haberTime",
     "haberFixTime",
     "bohrTime",
-    "tychoTime",
     "pascalTime",
+    "tychoTime",
     "pragueTime",
+)
+
+# The forks that shrink Parlia's 3-second block interval to 1.5s, 0.75s and
+# 0.45s, plus every timestamp fork scheduled after them. The value is past any
+# realistic run, so none of them ever activates and the chain keeps 3-second
+# blocks; the tail moves with them because go-bsc requires non-decreasing
+# timestamps.
+DEFERRED_TIMESTAMP = 9999999999
+DEFERRED_TIMESTAMP_FORKS = (
     "lorentzTime",
     "maxwellTime",
     "fermiTime",
     "osakaTime",
     "mendelTime",
+    "pasteurTime",
 )
 
 # BSC keeps Cancun's blob parameters on every later fork
@@ -196,6 +233,8 @@ def build(upstream: dict, chain_id: int) -> tuple[dict, int]:
     config.update(BLOCK_FORKS)
     for fork in TIMESTAMP_FORKS:
         config[fork] = TIMESTAMP
+    for fork in DEFERRED_TIMESTAMP_FORKS:
+        config[fork] = DEFERRED_TIMESTAMP
     config["blobSchedule"] = collections.OrderedDict(
         (name, dict(BLOB_PARAMS)) for name in ("cancun", "prague", "osaka")
     )
@@ -203,9 +242,10 @@ def build(upstream: dict, chain_id: int) -> tuple[dict, int]:
 
     genesis["nonce"] = upstream["nonce"]
     genesis["timestamp"] = upstream["timestamp"]
-    # Pre-Luban validator record, which is what block 0 requires because
-    # `lubanBlock` is 6.
-    genesis["extraData"] = "0x" + VANITY + VALIDATOR + SEAL
+    # Post-Luban validator record: block 0 carries it because `lubanBlock` is 0,
+    # and it is what seeds the snapshot's vote addresses.
+    validator_record = "01" + VALIDATOR.lower() + VOTE_ADDRESS + f"{TURN_LENGTH:02x}"
+    genesis["extraData"] = "0x" + VANITY + validator_record + SEAL
     genesis["gasLimit"] = upstream["gasLimit"]
     genesis["difficulty"] = upstream["difficulty"]
     genesis["mixHash"] = upstream["mixHash"]
@@ -253,9 +293,10 @@ def main() -> int:
     print(f"  bytecode patches : {patched} dev-validator address(es)")
     print(f"  chain id         : {args.chain_id}")
     print(f"  validator        : 0x{VALIDATOR}")
-    print(f"  extraData        : {(len(genesis['extraData']) - 2) // 2} bytes (pre-Luban)")
-    print(f"  block rungs      : {min(BLOCK_FORKS.values())}..{max(BLOCK_FORKS.values())}")
+    print(f"  extraData        : {(len(genesis['extraData']) - 2) // 2} bytes (post-Luban, validator + vote address)")
+    print(f"  block rungs      : {min(BLOCK_FORKS.values())}..{max(BLOCK_FORKS.values())} (Luban at 0)")
     print(f"  timestamp ladder : {TIMESTAMP} (past)")
+    print(f"  deferred         : {', '.join(DEFERRED_TIMESTAMP_FORKS)} at {DEFERRED_TIMESTAMP}")
     print(f"  source           : bsc-genesis-contract@{rev[:12]} ({UPSTREAM_FILE})")
     return 0
 
