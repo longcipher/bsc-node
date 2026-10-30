@@ -42,3 +42,6 @@ privnet/voteJournal/
 .rumdl_cache/
 .hypothesis/
 .benchmarks/
+
+# Python bytecode (py_compile in CI, build-genesis.py imports)
+__pycache__/

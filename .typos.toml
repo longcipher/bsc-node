@@ -1,5 +1,6 @@
 [files]
-extend-exclude = ["specs/**", "privnet/genesis.json"]
+# Generated genesis files and DEV-ONLY account dumps are hex, not prose.
+extend-exclude = ["specs/**", "privnet/genesis*.json", "privnet/accounts.json"]
 
 [default.extend-words]
 # BSC-specific terms (false positives otherwise)
