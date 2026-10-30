@@ -12,7 +12,7 @@
 
 - This workspace cross-validates the two BSC client implementations: Go `bsc` (geth-bsc) and Rust `reth-bsc`. The only crate is `bin/bsc-consistency-probe`; `crates/` is empty and reserved for future libraries.
 - The probe has two subcommands. `compare` diffs block headers field by field at the same height (`stateRoot`, `receiptsRoot`, `transactionsRoot`); `truth` verifies with `eth_getProof` that account and storage leaves are really committed under the reported `stateRoot`.
-- `privnet/` is the reproducible private-network lab: `genesis.json`, `privnet.sh`, `ab-breathe-interval.sh`. `docs/bsc-diff.md` and `docs/privnet.md` hold the long-form dual-client analysis.
+- `privnet/` is the reproducible private-network lab: the generated `genesis*.json` and `accounts.json` (from `build-genesis.py`), `privnet.sh`, `ab-breathe-interval.sh`. `docs/bsc-diff.md` and `docs/privnet.md` hold the long-form dual-client analysis.
 - The `*.zh.md` documents are deliberate Chinese translations. The English files stay English; keep the two in sync when one changes.
 - English only in code, comments, docs, and commit messages.
 
@@ -73,12 +73,14 @@ just mutation
 
 ## Private network rules
 
-- One shared genesis: `chainId: 1337`, Parlia `period: 3s`, `epoch: 200`, one development validator. Never reuse that key on mainnet or testnet.
-- `privnet.sh` modes are `go`, `rust` and `mixed`; the actions are `status`, `stop`, `clean`, `handover-to-rust`, `handover-to-go` and `system-contracts`. `GETH_BIN`, `RETH_BIN` and `PRIVNET_DIR` override the defaults.
+- Genesis files are generated, never hand-edited: `python3 -I privnet/build-genesis.py` regenerates them from the pinned `bsc-genesis-contract` revision, and `--check` (run in CI) fails if a committed file drifts. Profiles: `classic` (`genesis.json`, 3 s, one validator), `fast` (450 ms), `pasteur` (450 ms plus Pasteur), `multi` (three validators, turn length 4). All share `chainId: 1337`.
+- Every key in `accounts.json` is DEV-ONLY and public. Never reuse one on mainnet or testnet; the scripts refuse chain ids 56 and 97. Send test transactions from the user accounts, not the validator, whose nonce its own system transactions consume.
+- `privnet.sh` modes are `go`, `rust`, `mixed`, `fast`, `pasteur` and `multi`; the actions are `status`, `health`, `env`, `accounts`, `stop`, `clean`, `handover-to-rust`, `handover-to-go`, `system-contracts` and `genesis-check`. `GETH_BIN`, `RETH_BIN`, `PRIVNET_DIR`, `PORT_OFFSET` and `IPC_DIR` override the defaults. `start` exits non-zero unless `health` passes; exit 77 means go-bsc is missing.
+- Never stop nodes with `pkill`/`pgrep` patterns: `privnet.sh stop` verifies each pidfile against `/proc` and waits for the exit. Test against a separate `PRIVNET_DIR` with a `PORT_OFFSET` when another network may be running.
 - The Go follower needs `--syncmode full`; the default snap mode fails on tiny chains with `missing trie node`.
 - Rust nodes need `-d` (no discovery): a custom chain has no bootnodes, so the node dials the public internet and gets banned.
 - Rust mining must be enabled at startup with `--mining.enabled --mining.private-key`. The `miner_start` RPC is accepted but does not start the sealing loop, which is why `handover-to-go` restarts the miner instead.
 - Breathe blocks kill the chain, so the script passes `BREATHE_BLOCK_INTERVAL=1e15` to every node. Never change that interval on a running chain: the block layout forks.
-- The chain stalls near block 199 because the shared genesis deploys no system contracts, so neither client can assemble the epoch-200 validator set. Both stay alive and keep serving RPC; restart from a fresh data directory for longer runs.
+- The genesis deploys the system contracts, so the chain runs past every epoch. `BSCValidatorSet`'s init blob must carry the validators' BLS vote addresses, or fast finality stops at block 200 (`cannot collect enough votes`); `health` requires `finalized` to advance in the Rust-only modes.
 - Run exactly one miner per validator key. Use the handover actions to move block production.
-- `just privnet-verify-breathe` is the A/B regression for the daily breathe block: case A shrinks the interval and the chain must stall, case B proves the shipped default keeps producing with all four nodes agreeing.
+- `just privnet-verify-breathe` is the A/B regression for the daily breathe block: case A shrinks the interval and the chain must stall, case B proves the shipped default keeps producing with all four nodes agreeing. It runs in its own temp directory on `PORT_OFFSET` 2000 and needs go-bsc.

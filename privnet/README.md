@@ -1,61 +1,213 @@
 # BSC Private Networks (`privnet/`)
 
-One shared genesis, one script, three network modes: Go-only, Rust-only, or mixed (Go + Rust).
+Generated genesis files, one script, six network modes: Go-only, Rust-only and mixed
+(Go + Rust) on 3-second blocks, plus Rust-only networks on mainnet timing (450 ms
+blocks, Pasteur, and three validators with turn length 4) for block-builder end-to-end
+tests.
 
-- Shared chain: `genesis.json` — `chainId: 1337`, Parlia `period: 3s`, `epoch: 200`, single development validator `0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A` (key `0x1111…1111`, **never use on mainnet/testnet**).
-- Script: [`privnet.sh`](./privnet.sh) — starts/stops/checks the networks, wires peers automatically.
+- Chain: `chainId: 1337`, the BSC system contracts from a pinned
+  `bnb-chain/bsc-genesis-contract` revision, and Luban-era BLS vote addresses, so fast
+  finality runs and `finalized` advances. See [GENESIS.md](./GENESIS.md).
+- Script: [`privnet.sh`](./privnet.sh) starts, verifies, stops and wipes networks and
+  wires the peers.
+- **DEV-ONLY keys.** Every validator, BLS, builder and test-account key is public
+  ([`accounts.json`](./accounts.json)). Never fund them on BSC mainnet (56) or testnet
+  (97). The scripts refuse those chain ids.
 
 Full experiment report (setup, results, bugs found and fixed): [docs/privnet.md](../docs/privnet.md).
 
 ## Requirements
 
-- A `geth` binary built from `bnb-chain/bsc` (`make geth`), or set `GETH_BIN`.
-- For `rust`/`mixed` modes, a `reth-bsc` binary built from a source tree that contains the private-network fixes (Status-head fix, custom-chain defaults; see [docs/privnet.md](../docs/privnet.md)), or set `RETH_BIN`. Until upstream PR [bnb-chain/reth-bsc#546](https://github.com/bnb-chain/reth-bsc/pull/546) merges, build from our branch (`https://github.com/akfork/reth-bsc`, branch `fix/fix-privnet`); afterwards an upstream `develop` build works.
-- `curl`, `python3`, standard Unix tools. Optional: `cast` (Foundry) for sending test transactions.
+- For `go`/`mixed`: a `geth` binary built from `bnb-chain/bsc` (`make geth`), or set
+  `GETH_BIN`. Without it these modes exit with code 77 (skipped) and say so.
+- For every other mode: a `reth-bsc` binary that contains the private-network fixes
+  (Status-head fix, custom-chain defaults; see [docs/privnet.md](../docs/privnet.md)),
+  or set `RETH_BIN`. Until upstream PR
+  [bnb-chain/reth-bsc#546](https://github.com/bnb-chain/reth-bsc/pull/546) merges,
+  build from our branch (`https://github.com/akfork/reth-bsc`, branch
+  `fix/fix-privnet`); afterwards an upstream `develop` build works.
+- `bash` 4.4+, `curl`, `python3`, standard Unix tools. Optional: `cast` (Foundry) for
+  test transactions.
 
 ## Quick start
 
 ```bash
-# Go-only: go1 (miner) + go2 (follower)
-GETH_BIN=/path/to/geth ./privnet.sh go
-
-# Rust-only: rust1 (miner) + rust2 (follower)
+# Rust-only, 3 s blocks: rust1 (miner) + rust2 (follower)
 RETH_BIN=/path/to/reth-bsc ./privnet.sh rust
 
-# Mixed: go1 (miner) + go2 + rust1 + rust2 (followers)
+# Rust-only on mainnet timing (450 ms), with Pasteur (BEP-675), or three validators
+RETH_BIN=/path/to/reth-bsc ./privnet.sh fast
+RETH_BIN=/path/to/reth-bsc ./privnet.sh pasteur
+RETH_BIN=/path/to/reth-bsc ./privnet.sh multi
+
+# Go-only and mixed (need go-bsc)
+GETH_BIN=/path/to/geth ./privnet.sh go
 GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 
-# Inspect / stop / wipe
+# Inspect / verify / stop / wipe
 ./privnet.sh status
+./privnet.sh health             # exits non-zero unless the network is healthy
+./privnet.sh env                # exports for a builder e2e script
+./privnet.sh accounts           # the DEV-ONLY test accounts
 ./privnet.sh handover-to-rust   # mixed only: rust1 takes over block production
 ./privnet.sh handover-to-go     # mixed only: go1 takes over block production
 ./privnet.sh stop
-./privnet.sh clean              # stop + wipe chain data
+./privnet.sh clean              # stop + wipe chain data, vote journals, IPC sockets
 ```
 
-`GETH_BIN`/`RETH_BIN` default to `geth`/`reth-bsc` on `PATH`. Runtime data lives in `./data` (override with `PRIVNET_DIR`).
+`GETH_BIN`/`RETH_BIN` default to `geth`/`reth-bsc` on `PATH`. Runtime data lives in
+`./data` (override with `PRIVNET_DIR`). `start` returns only after the health check
+below passes, and exits non-zero (stopping the nodes it started) if it does not.
+Run `./privnet.sh --help` for every action and variable.
 
-## Topology and ports
+## Modes and genesis profiles
 
-| Node | Role | P2P | HTTP RPC | Notes |
+| Mode | Nodes | Genesis (profile) | Blocks | Notes |
 |---|---|---|---|---|
-| go1 | miner (go/mixed) | 30311 | 8545 | `--miner.recommit 1s` |
-| go2 | follower | 30312 | 8547 | `--syncmode full` (see below) |
-| rust1 | miner (rust) / follower (mixed) | 30313 | 8549 | authrpc 8555, `-d` (no discovery) |
-| rust2 | follower | 30314 | 8553 | authrpc 8556, `-d`, trusted to rust1 |
+| `go` | go1 (miner), go2 | `genesis.json` (classic) | 3 s | needs go-bsc |
+| `rust` | rust1 (miner), rust2 | `genesis.json` (classic) | 3 s | |
+| `mixed` | go1 (miner), go2, rust1, rust2 | `genesis.json` (classic) | 3 s | needs go-bsc; handovers |
+| `fast` | rust1 (miner), rust2 | `genesis-fast.json` (fast) | 450 ms | Lorentz, Maxwell, Fermi at genesis |
+| `pasteur` | rust1 (miner), rust2 | `genesis-pasteur.json` (pasteur) | 450 ms | + Osaka, Mendel, Pasteur: `BidBlockEnabled: true` |
+| `multi` | rust1, rust2, rust3 (all miners) | `genesis-multi.json` (multi) | 450 ms | 3 validators, turn length 4, Pasteur forks |
 
-Peering is automatic: Go nodes are linked with `admin.addPeer`; Rust nodes use `--trusted-peers` (static enodes captured at startup).
+`PROFILE=fast` (or `pasteur`) runs `go`, `rust` or `mixed` on that genesis instead; it
+is untested with go-bsc. The fast profiles reproduce mainnet's schedule: 1.5 s, 0.75 s
+and then 0.45 s block intervals from genesis, a 500-block epoch from block 500 and a
+1000-block epoch from block 1000. BidBlock admission needs Pasteur *at the head*, which
+the genesis gates on London (block 8), so `mev_params` reports `BidBlockEnabled: false`
+for the first 8 blocks.
+
+In `multi`, blocks 1-200 rotate one block per validator (the genesis snapshot's turn
+length is 1, as on BSC). From the first epoch boundary the set and turn length come
+from `BSCValidatorSet`: each validator then seals 4 consecutive blocks, so a builder
+sees a turn change every 1.8 s.
+
+## Topology, ports and IPC
+
+| Node | P2P | HTTP RPC | authrpc | mev gRPC | IPC |
+|---|---|---|---|---|---|
+| go1 | 30311 | 8545 | - | - | `$IPC_DIR/go1.ipc` |
+| go2 | 30312 | 8547 | - | - | `$IPC_DIR/go2.ipc` |
+| rust1 | 30313 | 8549 | 8555 | 8552 | `$IPC_DIR/rust1.ipc` |
+| rust2 | 30314 | 8553 | 8556 | 8554 | `$IPC_DIR/rust2.ipc` |
+| rust3 | 30315 | 8557 | 8558 | 8559 | `$IPC_DIR/rust3.ipc` |
+
+- `PORT_OFFSET` is added to every port, so a second network can run next to the first:
+  `PRIVNET_DIR=/tmp/pn2 PORT_OFFSET=1000 ./privnet.sh fast` serves rust1 on 9549.
+  `start` refuses a port that is already taken. If a BSC mainnet or testnet node
+  answers on it, it says so and refuses that too.
+- `IPC_DIR` defaults to `$PRIVNET_DIR/ipc`. Unix socket paths are limited to 107
+  bytes, so `start` fails with a clear message when a socket path would be longer.
+  Set `IPC_DIR` to a shorter directory if that happens.
+- Every listener binds to 127.0.0.1 (P2P included), and discovery is off. Go peers use
+  `admin_addPeer`. Rust peers use `--trusted-peers` plus `admin_addTrustedPeer`, with
+  enodes read from `admin_nodeInfo` (a missing enode is fatal).
+- The mev gRPC listener (BEP-675 `SendBidBlock`) runs on miners only.
+
+## Health checks
+
+`./privnet.sh health` (run at the end of every `start`) checks, and prints every
+failure:
+
+1. Every node's process is alive (pidfile, verified against `/proc`), its RPC answers,
+   and it is on the genesis chain id (never 56/97).
+2. The head advances `HEALTH_BLOCKS` (5) on every node within `HEALTH_TIMEOUT` (90 s at
+   3 s blocks, 45 s at 450 ms).
+3. Every node has its peers: 1, or 2 for go1 in `mixed` and for every node in `multi`.
+4. Every node has the same hash at a common recent height.
+5. `multi`: all three validators sealed blocks in the last 48.
+6. `eth_getBlockByNumber("finalized")` is above 0 and advances on every node within
+   `FINALITY_TIMEOUT` (120 s / 60 s). It is required in the Rust-only modes. In
+   `go`/`mixed` it is only a warning, because the go-bsc miner has no BLS vote key
+   wired (`REQUIRE_FINALITY=1` forces it).
+7. `pasteur`/`multi`: every miner reports `BidBlockEnabled: true` in `mev_params`.
+
+Exit codes for every script: `0` ok, `1` failure, `2` usage, `77` skipped (go-bsc
+missing). Other knobs: `START_HEALTH=0` (skip the check in `start`),
+`KEEP_ON_FAILURE=1` (leave nodes running when `start` fails), `VOTE_WARMUP_BLOCKS`
+(blocks before a miner votes, default 3), `ETH_PROOF_WINDOW` (reth
+`--rpc.eth-proof-window`, default 100000, for builders that read state through
+`eth_getProof`), and `RETH_EXTRA_ARGS`.
+
+## Builder end-to-end tests
+
+`./privnet.sh env` prints the exports a builder e2e script needs, after it checks that
+the target is not chain 56/97:
+
+| Variable | Meaning (default ports) |
+|---|---|
+| `PRIVNET_CHAIN_ID` | `1337` |
+| `PRIVNET_RPC_URL` | first miner's HTTP RPC (rust1: `http://127.0.0.1:8549`; go1 in `go`/`mixed`) |
+| `PRIVNET_IPC_PATH` | first miner's IPC socket (`$PRIVNET_DIR/ipc/rust1.ipc`) |
+| `PRIVNET_MEV_GRPC` | first miner's BEP-675 gRPC (`127.0.0.1:8552`) |
+| `PRIVNET_VALIDATOR_RPC_URLS`, `PRIVNET_VALIDATOR_IPC_PATHS` | every miner (`multi`: 8549, 8553, 8557) |
+| `PRIVNET_FOLLOWER_RPC_URL` | a non-mining node (rust2: 8553) |
+| `PRIVNET_BLOCK_INTERVAL_MS` | `3000` or `450` |
+| `PRIVNET_GENESIS` | the genesis file the nodes run (also what a builder's `chain` should point to) |
+| `PRIVNET_BUILDER_ADDRESS`, `PRIVNET_BUILDER_KEY` | funded builder account |
+| `PRIVNET_USER{1,2,3}_ADDRESS`, `PRIVNET_USER{1,2,3}_KEY` | funded user accounts |
+
+Send user transactions from the test accounts, not the validator key. The validator's
+nonce also advances with every system transaction it signs, so a test that signs with
+it races its own node.
+
+### DEV-ONLY accounts
+
+| Role | Address | Private key |
+|---|---|---|
+| validator1 (go1, rust1) | `0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A` | `0x1111…1111`, BLS `0x0707…0707` |
+| validator2 (rust2 in `multi`) | `0x1563915e194D8CfBA1943570603F7606A3115508` | `0x2222…2222`, BLS `0x0808…0808` |
+| validator3 (rust3 in `multi`) | `0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB` | `0x3333…3333`, BLS `0x0909…0909` |
+| builder | `0x7564105E977516C53bE337314c7E53838967bDaC` | `0x4444…4444` |
+| user1 | `0xe1fAE9b4fAB2F5726677ECfA912d96b0B683e6a9` | `0x5555…5555` |
+| user2 | `0xdb2430B4e9AC14be6554d3942822BE74811A1AF9` | `0x6666…6666` |
+| user3 | `0xAe72A48c1a36bd18Af168541c53037965d26e4A8` | `0x7777…7777` |
+
+Every key is the byte shown repeated 32 times. Validators hold 1e9 BNB each, and the
+builder and users hold 1e7 BNB each, in every genesis profile.
+
+## Process management
+
+- Each node runs with its datadir as its working directory. Its vote journal is
+  `<datadir>/voteJournal` (`BSC_VOTE_JOURNAL_DIR`), and its logs are `node.out`,
+  `node.log` and `logs/`. Nothing is written relative to the caller's cwd. Older
+  versions let reth-bsc create `voteJournal/` in whatever directory the script was
+  run from. A stale journal refuses votes on every height it lists, and `clean` now
+  removes the legacy `privnet/voteJournal`.
+- The script records `pid` and the canonical binary path (`pid.exe`) for every node.
+  Before it sends any signal, it checks that `/proc/<pid>` runs that binary with
+  `--datadir <that node's dir>`. It never pattern-matches process lists. `stop` sends
+  SIGTERM, waits up to `STOP_TIMEOUT` (60 s) for the process to exit, and sends SIGKILL
+  only as a last resort. `clean` refuses to wipe a datadir that any process still uses.
+- Handovers stop rust1, wait for it to exit (so its database lock is released), restart
+  it on the same datadir, and check that the chain advances.
 
 ## Operational notes (all observed in testing)
 
-- **Go follower needs `--syncmode full`.** The default snap mode fails on tiny private chains with `missing trie node ... layer stale`.
-- **Rust nodes need `-d` (no discovery).** A custom chain has no bundled bootnodes, so upstream reth falls back to Ethereum-mainnet bootnodes; the node dials the public internet and gets banned. Fixed binaries also default custom chains to an empty bootnode set.
-- **Rust mining must be enabled at startup** (`--mining.enabled --mining.private-key ...`). The `miner_start` RPC is accepted but does not start the sealing loop; Go's `miner_stop`/`miner_start` do work at runtime, which is what `handover-to-go` relies on.
-- **`--bootnodes` is ignored under Go's `--nodiscover`.** Go↔Go peering here uses `admin.addPeer`.
-- **Breathe blocks stop the chain, so the script disables them.** See [The daily breathe block](#the-daily-breathe-block) below. In short: a block whose parent lies in an earlier UTC day runs `updateValidatorSetV2`, the dev genesis's `BSCValidatorSet` has no such method, and the miner can never seal again. `BREATHE_BLOCK_INTERVAL` (default `1e15`) turns the rule off on every node.
-- **Chain stalls near block 199.** The shared genesis deploys no system contracts, so neither client can assemble the epoch-200 validator set: Go logs `Failed to prepare header for sealing` and stalls at 199; Rust logs `failed to decode getValidators output` and stalls at 198.
-  Both stay alive and keep serving RPC — this is graceful degradation, identical in spirit on both sides. For longer runs, restart from a fresh data directory (same genesis still works: chainId/genesis hash are unchanged, wall-clock timestamps make new blocks).
-- **Do not run two miners on the same validator key.** Both clients seal every ~3s and the tip flaps between forks (it converges, but logs fill with reorg noise). Use the handover actions for a single producer.
+- **Go follower needs `--syncmode full`.** The default snap mode fails on tiny private
+  chains with `missing trie node ... layer stale`.
+- **Rust nodes need `-d` (no discovery).** A custom chain has no bundled bootnodes, so
+  upstream reth falls back to Ethereum-mainnet bootnodes; the node dials the public
+  internet and gets banned. Fixed binaries also default custom chains to an empty
+  bootnode set.
+- **Rust mining must be enabled at startup** (`--mining.enabled --mining.private-key
+  ...`). The `miner_start` RPC is accepted but does not start the sealing loop; Go's
+  `miner_stop`/`miner_start` do work at runtime, which is what `handover-to-go` relies
+  on.
+- **`--bootnodes` is ignored under Go's `--nodiscover`.** Go peering uses
+  `admin_addPeer`.
+- **Breathe blocks stop the chain, so the script disables them.** See
+  [The daily breathe block](#the-daily-breathe-block) below. `BREATHE_BLOCK_INTERVAL`
+  (default `1e15`) turns the rule off on every node.
+- **Epoch boundaries and finality work.** The genesis deploys the system contracts,
+  so the chain runs past every epoch (tested to block 1248 at 450 ms). Older genesis
+  files had two problems. Those without contracts stalled at block 199. Those that
+  registered upstream's BLS key in `BSCValidatorSet` lost fast finality at block 200:
+  `cannot collect enough votes`, `finalized` stuck at 0. See [GENESIS.md](./GENESIS.md).
+- **Do not run two miners on the same validator key.** Both clients seal on schedule,
+  and the tip flaps between forks. It converges, but the logs fill with reorg noise.
+  Use the handover actions for a single producer, or `multi` for distinct validators.
 
 ## The daily breathe block
 
@@ -108,8 +260,11 @@ with four nodes agreeing byte-for-byte on hash and `stateRoot`, and both
 on an already-running chain — the block layout forks.
 
 Re-run that verification with `just privnet-verify-breathe` (~8 min): it
-starts the network twice, once at a 120s interval where the stall must appear,
-once at the shipped default where it must not, and then checks that all four
-nodes still agree on hash and `stateRoot`. `--case-b` runs only the second
-half. It stops and wipes the datadirs on exit, so run it when you do not need a
-live private network.
+starts a mixed network twice, once at a 120s interval where the stall must
+appear, once at the shipped default where it must not, and then checks that all
+four nodes still agree on hash and `stateRoot`. `--case-b` runs only the second
+half. A node that stops answering counts as a failure, never as a stall. The
+script runs in its own temporary directory on `PORT_OFFSET` 2000 (override with
+`AB_PRIVNET_DIR` / `AB_PORT_OFFSET`). A network already running from `./data` is
+therefore never touched, and a trap tears the test network down however the
+script exits. It needs go-bsc and exits 77 (skipped) without it.

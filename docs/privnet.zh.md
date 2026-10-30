@@ -2,7 +2,8 @@
 
 English: [privnet.md](./privnet.md)
 
-可复现环境：[`privnet/`](../privnet/)（共享 `genesis.json` + `privnet.sh`）。
+可复现环境：[`privnet/`](../privnet/)（生成的创世文件 + `privnet.sh`；用法、端口与健康检查见
+[privnet/README.zh.md](../privnet/README.zh.md)）。
 关联分析：[bsc-diff.zh.md](./bsc-diff.zh.md)。
 
 > 实验对象（2026-10-11 基于本地 checkout 构建）：
@@ -21,8 +22,12 @@ English: [privnet.md](./privnet.md)
 
 共享创世（`privnet/genesis.json`）：`chainId: 1337`，Parlia `period: 3s`、`epoch: 200`，
 单个开发验证人 `0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A`（私钥 `0x1111…1111`）。
-`alloc` 未部署系统合约（这在 epoch 边界很关键，见 §5）。
 两端吃同一文件：Go 用 `geth init`，Rust 用 `--chain <文件>`。
+
+> 第一、二轮（§2-§10）所用的创世没有部署系统合约，所以那些链会停在 epoch-200 边界（§5）。
+> 现在的创世文件由固定版本的 `bsc-genesis-contract` 生成，带全部系统合约，能以快速终局
+> 跨过每个 epoch，并提供 450 ms、Pasteur 和三验证人变体（§12，
+> [privnet/GENESIS.md](../privnet/GENESIS.md)）。
 
 | 节点 | 角色 | P2P | HTTP RPC |
 |---|---|---|---|
@@ -30,6 +35,7 @@ English: [privnet.md](./privnet.md)
 | go2 | 跟随 | 30312 | 8547 |
 | rust1 | 出块（rust）/ 跟随（mixed） | 30313 | 8549 |
 | rust2 | 跟随 | 30314 | 8553 |
+| rust3 | 验证人（仅 `multi`，§12） | 30315 | 8557 |
 
 Go↔Go 用 `admin.addPeer` 互联（`--nodiscover` 下 `--bootnodes` 不会被拨号）；
 Rust 用 `-d`（关闭发现）加 `--trusted-peers` 静态 enode。Rust 出块必须启动时开启
@@ -74,6 +80,8 @@ Rust 用 `-d`（关闭发现）加 `--trusted-peers` 静态 enode。Rust 出块�
   churn），但一两块内收敛。实际使用保持单一生产者。
 
 ## 5. 无合约链的 epoch-200 边界
+
+> 历史记录（第一、二轮）。现在的创世不再缺少系统合约，链会跑过 199 块（§12）。
 
 没有部署系统合约时，两端都组装不出 epoch-200 的验证人集合：
 
@@ -241,7 +249,7 @@ bootnode（实测：大量外拨 + 被 ban）。现返回显式空集合；
 | go-bsc | `--override.breatheblockinterval <秒>`（`cmd/geth/config.go`） |
 | reth-bsc | `BREATHE_BLOCK_INTERVAL=<秒>`（`src/consensus/parlia/util.rs`） |
 
-实测（`privnet/ab-start.sh`，4 个节点均一致设置）：
+实测（`privnet/ab-breathe-interval.sh`，4 个节点均一致设置）：
 
 | 间隔 | 结果 |
 |---|---|
@@ -253,3 +261,54 @@ bootnode（实测：大量外拨 + 被 ban）。现返回显式空集合；
 该间隔属于共识，所有节点必须一致（且 reth 在进程启动时读取，只能靠重启修改）；
 另外 `EstimateGasReservedForSystemTxs` 会返回软上限而非硬上限，
 这只会给用户交易**腾出**更多 gas。
+
+## 12. 面向 builder 端到端测试的加固（2026-10-30）
+
+私网现在支撑一个 BSC 区块构建者（向 reth-bsc 验证人提交 BEP-322 `mev_sendBid` 报价的 rbuilder 分支）
+的端到端测试。实验对象：Rust `akfork/reth-bsc` @ `96c859f`（`fix/fix-privnet` 加 builder 集成 API，
+二进制自报 `0.1.3-14-g96c859f-dirty`）。手头没有 go-bsc 二进制，所以 Go 模式没有重跑；
+缺少 `geth` 时它们现在以 77（跳过）退出。
+
+**终局性从 200 块起就失效了。** 长期运行的链每个块都打 `cannot collect enough votes`，
+`finalized` 从未离开创世块。原因：`0x1000` 的初始化 blob 保留了上游的 BLS 私钥，
+因此从 epoch-200 的块头起，快照里的投票地址不再包含出块节点自己的，reth-bsc 的投票生产者
+跳过了每一次投票（`reason="not-validator"`）。两个脚本缺陷让情况更糟：reth-bsc 把
+`voteJournal/` 写在调用者的当前目录下，那里残留的旧日志会拒绝为其中列出的每个高度投票；
+而且没有节点显式指定 IPC 路径，跟随节点会占用默认的 `/tmp/reth.ipc`。现在创世把私钥也一并替换；
+每个节点都在自己的数据目录里运行，`BSC_VOTE_JOURNAL_DIR` 和 `--ipcpath` 都指向那里；
+健康检查要求 `finalized` 持续前进。细节见 [privnet/GENESIS.md](../privnet/GENESIS.md)。
+
+**主网节奏。** reth-bsc 会从自定义创世读取 `lorentzTime`/`maxwellTime`/`fermiTime`，
+无需改客户端。`fast` 在创世即激活它们，`pasteur` 再加上 Osaka、Mendel、Pasteur。
+链头过了 8 号块后，BEP-675 的 `BidBlockEnabled` 才会变为 true：Pasteur 门控在 London 之后，
+而创世把 London 放在 8 号块，以保持 0 号块为 London 之前的形态。
+
+**轮次边界。** `multi` 运行三个验证人，turn length 为 4。验证人集合无法编进初始化 blob，
+所以该配置把 blob 置空，并直接为 `BSCValidatorSet` 预置存储，存储布局已对照部署的字节码核实。
+
+**脚本。** 现在只有链头前进、peer 连通、哈希一致、终局前进时 `start` 才算成功，
+否则以非零码退出，并停掉本次启动的节点。节点靠 pidfile 跟踪并对照 `/proc` 校验，
+从不使用 `pgrep`/`pkill` 模式匹配；`stop` 会等进程真正退出，这对重开同一数据库的 handover 很关键。
+enode 取自 `admin_nodeInfo`，`PORT_OFFSET` 让多个网络共用一台主机。所有私钥都仅限开发，
+所以每个脚本都拒绝 chain id 56 和 97。创世生成器固定到某个提交，并在 CI 里校验可复现性
+（`--check`），与 shellcheck、ruff 并列。
+
+实测（2026-10-30，各用独立的 `PRIVNET_DIR`，`PORT_OFFSET` 1000-1300）：
+
+| 模式 | 结果 |
+|---|---|
+| `rust`（3 s） | 启动 22 s 后健康（链头 7 时 finalized 为 6）；epoch-200 块头带的是我们的 BLS 私钥，228 块之后 finalized = 链头 − 1；在同一数据目录上重启依然健康 |
+| `fast` | 相邻块间隔 450 ms；跑过 1248 块（epoch 200、500、1000）且终局正常；日志 0 行 `ERROR` |
+| `pasteur` | 从 8 号块起出块节点上 `BidBlockEnabled: true` |
+| `multi` | 每个节点 2 个 peer；epoch 之前每个验证人轮流出 1 个块，从 204 块起每个验证人连续出 4 个；终局滞后 1 |
+| 故障 | 节点停止、目标端口上是 chain-97 节点、端口冲突、启动超时：均被检测到，非零退出，不残留节点 |
+
+剩余限制：
+
+- **本轮未测试 go-bsc**，包括 `multi` 与 fast 系列（`PROFILE=fast ./privnet.sh mixed`）。
+  go-bsc 出块节点也没有配置 BLS 投票私钥，所以 `go`/`mixed` 中终局性只是警告；
+  要接上需要 BLS keystore（`geth bls account import`）以及 `--vote --blswallet --blspassword`。
+- **`finalized` 只比链头落后 1 块**，而不是 2 块：当链头本身已在投票池里凑够法定票数时，
+  reth-bsc 与 go-bsc 的 API 后端一样，把链头视为 justified，把其父块视为 finalized。
+- **turn length 从 1 开始。** 和任何新起的 BSC 链一样，创世快照的 turn length 为 1，
+  合约中的值（4）从第一个 epoch 边界起生效。

@@ -2,7 +2,8 @@
 
 中文版： [privnet.zh.md](./privnet.zh.md)
 
-Reproducible setup: [`privnet/`](../privnet/) (shared `genesis.json` + `privnet.sh`).
+Reproducible setup: [`privnet/`](../privnet/) (generated genesis files + `privnet.sh`;
+usage, ports and health checks in [privnet/README.md](../privnet/README.md)).
 Related analysis: [bsc-diff.md](./bsc-diff.md).
 
 > Subjects (built 2026-10-11 from local checkouts):
@@ -22,8 +23,14 @@ Related analysis: [bsc-diff.md](./bsc-diff.md).
 
 Shared genesis (`privnet/genesis.json`): `chainId: 1337`, Parlia `period: 3s`, `epoch: 200`,
 single development validator `0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A` (key `0x1111…1111`).
-No system contracts are deployed in `alloc` (this matters at the epoch boundary, §5).
 Both clients consume the same file: Go via `geth init`, Rust via `--chain <file>`.
+
+> The genesis used in rounds 1-2 (§2-§10) deployed no system contracts, which is
+> why those chains stopped at the epoch-200 boundary (§5). The current genesis
+> files are generated from a pinned `bsc-genesis-contract` revision with every
+> system contract, run past every epoch with fast finality, and come in
+> 450 ms, Pasteur and three-validator variants (§12,
+> [privnet/GENESIS.md](../privnet/GENESIS.md)).
 
 | Node | Role | P2P | HTTP RPC |
 |---|---|---|---|
@@ -31,6 +38,7 @@ Both clients consume the same file: Go via `geth init`, Rust via `--chain <file>
 | go2 | follower | 30312 | 8547 |
 | rust1 | miner (rust) / follower (mixed) | 30313 | 8549 |
 | rust2 | follower | 30314 | 8553 |
+| rust3 | validator (`multi` only, §12) | 30315 | 8557 |
 
 Go↔Go peering uses `admin.addPeer` (`--bootnodes` is ignored under `--nodiscover`);
 Rust uses `-d` (no discovery) plus `--trusted-peers` with static enodes. Rust mining is
@@ -80,6 +88,9 @@ runtime (`miner_stop`/`miner_start`).
   within a block or two. Keep a single producer in practice.
 
 ## 5. Epoch-200 boundary on a contract-less chain
+
+> Historical (rounds 1-2). The genesis no longer lacks system contracts; the
+> current chain runs past block 199 (§12).
 
 Neither client can assemble the epoch-200 validator set without deployed system contracts:
 
@@ -266,7 +277,7 @@ Both clients expose an override for the interval, which is the whole fix:
 | go-bsc | `--override.breatheblockinterval <seconds>` (`cmd/geth/config.go`) |
 | reth-bsc | `BREATHE_BLOCK_INTERVAL=<seconds>` (`src/consensus/parlia/util.rs`) |
 
-Measured (`privnet/ab-start.sh`, all four nodes agreeing):
+Measured (`privnet/ab-breathe-interval.sh`, all four nodes agreeing):
 
 | interval | result |
 |---|---|
@@ -280,3 +291,64 @@ is consensus, so all nodes must match (and reth reads it at process start, so a
 restart is the only way to change it); and `EstimateGasReservedForSystemTxs`
 returns the soft limit instead of the hard limit, which only *frees* gas for
 user transactions.
+
+## 12. Builder end-to-end hardening (2026-10-30)
+
+The private network now backs end-to-end tests of a BSC block builder (an rbuilder
+fork that submits BEP-322 `mev_sendBid` bids to a reth-bsc validator). Subject:
+Rust `akfork/reth-bsc` @ `96c859f` (`fix/fix-privnet` plus builder integration APIs,
+binary `0.1.3-14-g96c859f-dirty`). No go-bsc binary was available, so the Go modes
+were not re-run. They now exit 77 (skipped) when `geth` is missing.
+
+**Finality was dead from block 200 on.** The long-running chain logged
+`cannot collect enough votes` on every block, and `finalized` never left genesis.
+Cause: the `0x1000` init blob kept upstream's BLS key, so from the epoch-200 header
+the snapshot's vote addresses no longer contained the miner's, and reth-bsc's vote
+producer skipped every vote (`reason="not-validator"`). Two harness defects made it
+worse. reth-bsc wrote `voteJournal/` relative to the caller's cwd, and a stale
+journal there refuses votes on every height it lists. No node had an explicit IPC
+path either, so a follower took the default `/tmp/reth.ipc`. The genesis now
+substitutes the key as well. Every node runs in its own datadir with
+`BSC_VOTE_JOURNAL_DIR` and `--ipcpath` set there, and the health check requires
+`finalized` to advance. Details in [privnet/GENESIS.md](../privnet/GENESIS.md).
+
+**Mainnet timing.** reth-bsc reads `lorentzTime`/`maxwellTime`/`fermiTime` from a
+custom genesis, so no client change is needed. `fast` activates them at genesis, and
+`pasteur` adds Osaka, Mendel and Pasteur. BEP-675 `BidBlockEnabled` turns true once
+the head is past block 8, because Pasteur is gated on London, which the genesis
+keeps at block 8 so that block 0 stays pre-London.
+
+**Turn boundaries.** `multi` runs three validators with turn length 4. The set
+cannot be compiled into the init blob, so the profile empties the blob and seeds
+`BSCValidatorSet`'s storage. The layout was verified against the deployed bytecode.
+
+**Harness.** `start` now fails non-zero unless the head advances, peers connect,
+hashes agree and finality advances. It stops the nodes it started on failure. Nodes
+are tracked by pidfiles checked against `/proc`, never by `pgrep`/`pkill` patterns,
+and `stop` waits for the process to exit. That matters for handovers, which reopen
+the same database. Enodes come from `admin_nodeInfo`, and `PORT_OFFSET` lets several
+networks share a host. Every script refuses chain ids 56 and 97, because all keys
+are DEV-ONLY. The genesis generator is pinned to a commit and checked for
+reproducibility in CI (`--check`), next to shellcheck and ruff.
+
+Measured (2026-10-30, separate `PRIVNET_DIR`s, `PORT_OFFSET` 1000-1300):
+
+| mode | result |
+|---|---|
+| `rust` (3 s) | healthy 22 s after start (finalized 6 at head 7); epoch-200 header carries our BLS key, finalized = head − 1 past block 228; restart on the same datadirs healthy |
+| `fast` | consecutive blocks 450 ms apart; past block 1248 (epochs 200, 500, 1000) with finality; 0 `ERROR` lines |
+| `pasteur` | `BidBlockEnabled: true` on the miner from block 8 |
+| `multi` | 2 peers per node; one block per validator up to the epoch, then from block 204 four in a row per validator; finality lag 1 |
+| failures | stopped node, chain-97 node on a target port, port collision, start timeout: each detected, non-zero exit, no node left behind |
+
+Remaining limitations:
+
+- **go-bsc is untested in this round**, including `multi` and the fast profiles
+  (`PROFILE=fast ./privnet.sh mixed`). The go-bsc miner also has no BLS vote key
+  wired, so finality is only a warning in `go`/`mixed`. Wiring it needs a BLS keystore
+  (`geth bls account import`) and `--vote --blswallet --blspassword`.
+- **`finalized` is one block behind the head**, not two. When the head itself already
+  has a vote quorum in the pool, reth-bsc, like go-bsc's API backend, reports the head
+  as justified and its parent as finalized.
+- **Turn length starts at 1.** As on any fresh BSC chain, the genesis snapshot has turn
+  length 1, and the contract's value (4) applies from the first epoch boundary.
