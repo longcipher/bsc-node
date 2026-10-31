@@ -363,13 +363,15 @@ and rust2. A builder then bids to both clients within one rotation, as on BSC te
 
 **go-bsc could not sync from reth-bsc.** go-bsc dropped every reth-bsc peer as soon as it
 synced from it. At `--verbosity 4` the reason is `retrieved block body is invalid`. The
-genesis has Shanghai's time in the past but London at block 8. go-bsc's `IsShanghai`
-requires London, so blocks 1-7 have no `withdrawalsRoot`. reth's `EthStorage` reads
-withdrawals for every block past the Shanghai timestamp, so reth-bsc served those
-bodies with `withdrawals: []`, and go-bsc's downloader rejects a body with withdrawals
-under a header without the root. reth-bsc now serves a body's withdrawals only when its
-header commits to them (akfork/reth-bsc `9c4f410`). Public BSC chains activated London
-long before Shanghai, so their bodies are unchanged. Upstream main has the same code.
+genesis has Shanghai's and Cancun's times in the past but London at block 8. A BSC
+header carries `withdrawalsRoot` only from Cancun, which needs London, so blocks 1-7
+have none. reth's `EthStorage` reads withdrawals for every block past the Shanghai
+timestamp, so reth-bsc served those bodies with `withdrawals: []`, and go-bsc's
+downloader rejects a body with withdrawals under a header without the root. reth-bsc now
+serves a body's withdrawals only when its header commits to them (akfork/reth-bsc
+`9c4f410`, upstream [bnb-chain/reth-bsc#600](https://github.com/bnb-chain/reth-bsc/pull/600)).
+Public chains have the same gap between Shanghai and Cancun: testnet blocks 36,087,828
+to 39,539,136 and mainnet blocks from 2024-01-23 to 2024-06-20.
 
 **A go-bsc validator must join, not start.** Started with `--mine`, go1 seals its own
 block 1 before it has peers, and then stays on that fork: its downloader stalls on the

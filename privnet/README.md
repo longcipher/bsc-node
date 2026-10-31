@@ -93,7 +93,8 @@ clients in one rotation, as on BSC testnet. rust1 and rust2 start the chain (two
 three validators keep it going), and go1 syncs it in full before `miner_start`: a go1
 that seals from the start makes its own block 1 before it has peers and stays on that
 fork. go-bsc can sync from reth-bsc only with reth-bsc that serves pre-London bodies
-without withdrawals (akfork/reth-bsc `9c4f410`, branch `fix/fix-privnet`). Older
+without withdrawals (akfork/reth-bsc `9c4f410`, branch `fix/fix-privnet`; upstream
+[bnb-chain/reth-bsc#600](https://github.com/bnb-chain/reth-bsc/pull/600)). Older
 builds serve them with `withdrawals: []`, and go-bsc drops the peer with `retrieved
 block body is invalid`.
 

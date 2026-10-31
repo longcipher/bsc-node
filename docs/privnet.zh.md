@@ -321,12 +321,14 @@ enode 取自 `admin_nodeInfo`，`PORT_OFFSET` 让多个网络共用一台主机�
 设置 `BSC_ALLOWED_BUILDERS`。为此需要两处修复。
 
 **go-bsc 无法从 reth-bsc 同步。** go-bsc 一开始从 reth-bsc 同步就断开它。用 `--verbosity 4`
-可以看到原因：`retrieved block body is invalid`。创世里 Shanghai 的时间已经过去，但 London 在
-8 号块。go-bsc 的 `IsShanghai` 要求已过 London，所以 1-7 号块没有 `withdrawalsRoot`。reth 的
-`EthStorage` 对时间戳过了 Shanghai 的每个块都读取 withdrawals，于是 reth-bsc 给这些块体带上
-`withdrawals: []`；块头没有该 root 而块体带 withdrawals，go-bsc 的下载器就会拒绝。现在 reth-bsc
-只在块头承诺了 withdrawals 时才在块体里提供它（akfork/reth-bsc `9c4f410`）。公开的 BSC 链在
-Shanghai 之前很久就激活了 London，块体不受影响。上游 main 也有同样的代码。
+可以看到原因：`retrieved block body is invalid`。创世里 Shanghai 和 Cancun 的时间都已过去，但
+London 在 8 号块。BSC 的块头从 Cancun 起才带 `withdrawalsRoot`，而 Cancun 要求已过 London，所以
+1-7 号块没有该字段。reth 的 `EthStorage` 对时间戳过了 Shanghai 的每个块都读取 withdrawals，于是
+reth-bsc 给这些块体带上 `withdrawals: []`；块头没有该 root 而块体带 withdrawals，go-bsc 的下载器
+就会拒绝。现在 reth-bsc 只在块头承诺了 withdrawals 时才在块体里提供它（akfork/reth-bsc
+`9c4f410`，上游 [bnb-chain/reth-bsc#600](https://github.com/bnb-chain/reth-bsc/pull/600)）。公开链
+在 Shanghai 与 Cancun 之间也有同样的问题：测试网 36,087,828 至 39,539,136 号块，主网 2024-01-23
+至 2024-06-20 的块。
 
 **go-bsc 验证人必须加入，而不是一开始就出块。** 若以 `--mine` 启动，go1 会在连上 peer 之前出
 自己的 1 号块，之后一直停在那条分叉上：它的下载器在 reth-bsc 的链上卡住。所以由 rust1、rust2

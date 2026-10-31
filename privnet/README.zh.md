@@ -85,7 +85,8 @@ GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc \
 出价，与 BSC 测试网相同。rust1、rust2 先启动并出块（三个验证人中的两个就能维持出块），go1 以
 full 模式同步完成后才 `miner_start`：若 go1 一启动就出块，它会在连上 peer 之前出自己的 1 号块，
 并一直停在那条分叉上。go-bsc 只能从这样的 reth-bsc 同步：London 之前的块体不带 withdrawals
-（akfork/reth-bsc `9c4f410`，分支 `fix/fix-privnet`）。更早的版本给这些块体带上
+（akfork/reth-bsc `9c4f410`，分支 `fix/fix-privnet`；上游
+[bnb-chain/reth-bsc#600](https://github.com/bnb-chain/reth-bsc/pull/600)）。更早的版本给这些块体带上
 `withdrawals: []`，go-bsc 会以 `retrieved block body is invalid` 断开该 peer。
 
 ### Builder 白名单
