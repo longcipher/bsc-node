@@ -107,8 +107,8 @@ GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 4. 所有节点在同一近期高度上的哈希相同。
 5. `multi`：最近 48 个块里三个验证人都出过块。
 6. `eth_getBlockByNumber("finalized")` 大于 0，且在 `FINALITY_TIMEOUT`（120 s / 60 s）内于每个节点上前进。
-   纯 Rust 模式下为必选项；`go`/`mixed` 中只是警告，因为 go-bsc 出块节点没有配置 BLS 投票私钥
-   （`REQUIRE_FINALITY=1` 可强制要求）。
+   所有模式下都是必选项：go-bsc 出块节点也用导入 BLS 钱包的 0 号验证人 BLS 私钥投票
+   （`REQUIRE_FINALITY=0` 改为警告）。
 7. `pasteur`/`multi`：每个出块节点的 `mev_params` 都报告 `BidBlockEnabled: true`。
 
 所有脚本的退出码：`0` 正常、`1` 失败、`2` 用法错误、`77` 跳过（缺少 go-bsc）。其他开关：

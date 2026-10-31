@@ -39,7 +39,7 @@
 #   HEALTH_BLOCKS     blocks the head must advance  [5]
 #   HEALTH_TIMEOUT    seconds for head / peers      [90 at 3 s, 45 at 450 ms]
 #   FINALITY_TIMEOUT  seconds for finality          [120 at 3 s, 60 at 450 ms]
-#   REQUIRE_FINALITY  1/0; default 1 for rust-only modes, 0 for go/mixed
+#   REQUIRE_FINALITY  1/0; whether finality must advance for health      [1]
 #   START_HEALTH      0 skips the health check at the end of start [1]
 #   KEEP_ON_FAILURE   1 leaves nodes running when start fails [0]
 #   STOP_TIMEOUT      seconds to wait for a node to exit [60]
@@ -94,6 +94,8 @@ STOP_TIMEOUT="${STOP_TIMEOUT:-60}"
 ACCOUNTS="$SCRIPT_DIR/accounts.json"
 STATE="$PRIVNET_DIR/network.env"
 GETH_PASSWORD="testpassword123"
+# go-bsc's BLS wallet wants letters, digits and a symbol.
+GETH_BLS_PASSWORD="Privnet-bls-1!"
 
 # A "breathe block" is one whose parent lies in an earlier UTC day
 # (`isBreatheBlock` in consensus/parlia). It is the only place
@@ -248,7 +250,7 @@ select_mode() { # select_mode <mode>: sets NET_* for a fresh start
   esac
   NET_GENESIS="$(genesis_for "$NET_PROFILE")"
   NET_BLOCK_MS="$(block_ms_for "$NET_PROFILE")"
-  case "$1" in go|mixed) NET_REQUIRE_FINALITY="${REQUIRE_FINALITY:-0}" ;; *) NET_REQUIRE_FINALITY="${REQUIRE_FINALITY:-1}" ;; esac
+  NET_REQUIRE_FINALITY="${REQUIRE_FINALITY:-1}"
   NET_PORT_OFFSET="$PORT_OFFSET"
   NET_IPC_DIR="$IPC_DIR"
 }
@@ -532,6 +534,15 @@ init_go_node() { # init_go_node <node>
       die "geth account import failed for $name"
     touch "$dir/keystore_imported"
   fi
+  # The miner votes (fast finality) with validator 0's BLS key; `geth bls account import`
+  # takes the raw key and creates the wallet.
+  if [ ! -f "$dir/bls_imported" ]; then
+    printf '%s\n' "$GETH_BLS_PASSWORD" >"$dir/blspassfile"
+    account "validators.0.blsPrivateKey" >"$dir/bls.key"
+    "$GETH_BIN" bls account import --datadir "$dir" --blspassword "$dir/blspassfile" "$dir/bls.key" >/dev/null 2>&1 ||
+      die "geth bls account import failed for $name"
+    touch "$dir/bls_imported"
+  fi
   if [ ! -f "$dir/geth/chaindata/CURRENT" ]; then
     # A failed `geth init` must be fatal and must not leave the partial `geth/`
     # directory behind: its presence is what makes the next run skip init and
@@ -565,7 +576,8 @@ start_go_node() { # start_go_node <node> <miner|follower>
     printf '[Eth.Miner.Mev]\nEnabled = true\nGRPCDisabled = true\n' >"$dir/mev.toml"
     args+=(--config "$dir/mev.toml"
       --mine --miner.etherbase "$addr" --unlock "$addr" --password "$dir/passfile"
-      --allow-insecure-unlock --miner.recommit 1s)
+      --allow-insecure-unlock --miner.recommit 1s
+      --vote --blspassword "$dir/blspassfile" --vote-journal-path "$dir/voteJournal")
   else
     # --syncmode full is required; snap fails on tiny private chains with
     # "missing trie node ... layer stale".
@@ -787,7 +799,7 @@ do_health() { # do_health: 0 if healthy, 1 otherwise; every failure is printed
           echo "[privnet] FAIL: finalized did not advance past $f0 within ${FINALITY_TIMEOUT}s (lowest node at $fmin)" >&2
           fails=$((fails + 1))
         else
-          warn "finalized stayed at $fmin (not required for $NET_MODE: the go-bsc miner has no BLS vote key wired)"
+          warn "finalized stayed at $fmin (not required: REQUIRE_FINALITY=0)"
         fi
         break
       fi

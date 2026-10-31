@@ -118,9 +118,9 @@ failure:
 4. Every node has the same hash at a common recent height.
 5. `multi`: all three validators sealed blocks in the last 48.
 6. `eth_getBlockByNumber("finalized")` is above 0 and advances on every node within
-   `FINALITY_TIMEOUT` (120 s / 60 s). It is required in the Rust-only modes. In
-   `go`/`mixed` it is only a warning, because the go-bsc miner has no BLS vote key
-   wired (`REQUIRE_FINALITY=1` forces it).
+   `FINALITY_TIMEOUT` (120 s / 60 s), in every mode: the go-bsc miner votes too, with
+   validator 0's BLS key imported into its BLS wallet (`REQUIRE_FINALITY=0` makes it a
+   warning).
 7. `pasteur`/`multi`: every miner reports `BidBlockEnabled: true` in `mev_params`.
 
 Exit codes for every script: `0` ok, `1` failure, `2` usage, `77` skipped (go-bsc
