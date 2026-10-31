@@ -1232,11 +1232,12 @@ mod tests {
     #[tokio::test]
     async fn run_compare_uses_the_workers_it_was_given() {
         // The bound below is only meaningful if the workers are really used.
-        // All 8 block probes are primed before any of them can answer, so the
-        // peak is exactly 8 blocks x 2 calls = 16 per endpoint.
+        // Each endpoint holds its answers until 16 requests are open, which 8
+        // workers reach with 8 blocks x 2 calls; a caller that falls back to
+        // sequential never gets there and is answered at the gate's deadline.
         let routes = go_routes("0x64", "0xabc", 100);
-        let go = MockRpc::start(routes.clone()).await;
-        let rust = MockRpc::start(routes).await;
+        let go = MockRpc::start_gated(routes.clone(), 16).await;
+        let rust = MockRpc::start_gated(routes, 16).await;
         let heights: Vec<u64> = (100..108).collect();
 
         assert!(compare_range(&go, &rust, &heights, 8).await.is_ok());
@@ -1254,25 +1255,26 @@ mod tests {
         // One block probe issues two concurrent requests to each endpoint, so a
         // run with N workers opens at most 2N connections to either side. That
         // bound is the point: it is what stops a wide --start..--end range from
-        // exhausting the sockets of a public node.
+        // exhausting the sockets of a public node. The endpoints hold their
+        // answers until the ceiling is reached, so the run really fills it.
         for workers in [1usize, 2, 3, 5, 8] {
+            let ceiling = workers * 2;
             let routes = go_routes("0x64", "0xabc", 100);
-            let go = MockRpc::start(routes.clone()).await;
-            let rust = MockRpc::start(routes).await;
+            let go = MockRpc::start_gated(routes.clone(), ceiling).await;
+            let rust = MockRpc::start_gated(routes, ceiling).await;
             let heights: Vec<u64> = (100..116).collect();
 
             assert!(compare_range(&go, &rust, &heights, workers).await.is_ok());
 
-            let ceiling = workers * 2;
-            assert!(
-                go.peak_in_flight() <= ceiling,
-                "{workers} workers: go peaked at {} concurrent requests, ceiling {ceiling}",
-                go.peak_in_flight()
+            assert_eq!(
+                go.peak_in_flight(),
+                ceiling,
+                "{workers} workers: go must peak at the ceiling of concurrent requests"
             );
-            assert!(
-                rust.peak_in_flight() <= ceiling,
-                "{workers} workers: rust peaked at {} concurrent requests, ceiling {ceiling}",
-                rust.peak_in_flight()
+            assert_eq!(
+                rust.peak_in_flight(),
+                ceiling,
+                "{workers} workers: rust must peak at the ceiling of concurrent requests"
             );
         }
     }
@@ -1281,10 +1283,11 @@ mod tests {
     async fn run_compare_with_one_worker_opens_only_its_block_two_calls() {
         // The control case: a single worker must never overlap the requests of
         // two blocks, which is what makes the peak a measurement of the worker
-        // count rather than of anything else.
+        // count rather than of anything else. The gate makes the block's own
+        // two calls overlap, so the peak is exactly 2.
         let routes = go_routes("0x64", "0xabc", 100);
-        let go = MockRpc::start(routes.clone()).await;
-        let rust = MockRpc::start(routes).await;
+        let go = MockRpc::start_gated(routes.clone(), 2).await;
+        let rust = MockRpc::start_gated(routes, 2).await;
         let heights: Vec<u64> = (100..108).collect();
 
         assert!(compare_range(&go, &rust, &heights, 1).await.is_ok());

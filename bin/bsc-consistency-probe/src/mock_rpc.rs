@@ -17,13 +17,24 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
+    sync::Notify,
+    time::Instant,
 };
+
+/// How long after it starts a gated server answers anyway, gate or not.
+///
+/// A concurrent caller opens its requests within milliseconds, so this only
+/// runs out for a caller that never reaches the gate. It is well below the
+/// client's 10 s request timeout, so such a caller fails the test's peak
+/// assertion instead of timing out.
+const GATE_DEADLINE: Duration = Duration::from_secs(2);
 
 /// Sentinel key selecting a response body that is not valid JSON.
 const RAW_BODY_KEY: &str = "$rawBody";
@@ -51,12 +62,54 @@ pub struct MockRpc {
     peak_in_flight: Arc<AtomicUsize>,
 }
 
+/// Holds every answer until `width` requests have been in flight at once.
+struct Gate {
+    width: usize,
+    deadline: Instant,
+    /// Woken on every arrival, so held requests re-check the peak.
+    arrived: Notify,
+}
+
+impl Gate {
+    async fn wait(&self, peak_in_flight: &AtomicUsize) {
+        loop {
+            // Created before the check, so an arrival between the check and
+            // the await still wakes this request.
+            let arrived = self.arrived.notified();
+            if peak_in_flight.load(Ordering::SeqCst) >= self.width {
+                return;
+            }
+            if tokio::time::timeout_at(self.deadline, arrived).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
 impl MockRpc {
     /// Binds a loopback listener serving `routes` and spawns its accept loop.
     ///
     /// Each connection is handled on its own task, so concurrent `try_join!`
     /// calls in the code under test are served concurrently too.
     pub async fn start(routes: Vec<(&str, Value)>) -> Self {
+        Self::listen(routes, None).await
+    }
+
+    /// Like [`MockRpc::start`], but holds every answer until `width` requests
+    /// have been in flight at once (or [`GATE_DEADLINE`] has passed); after
+    /// that it answers at once.
+    ///
+    /// Without a gate, an answer can be written before the caller's next
+    /// request arrives, so the peak depends on how the runtime schedules the
+    /// two sides. With one, a caller that keeps `width` requests open reaches
+    /// a peak of exactly `width`, and a caller that keeps fewer open stays
+    /// below it.
+    pub async fn start_gated(routes: Vec<(&str, Value)>, width: usize) -> Self {
+        let gate = Gate { width, deadline: Instant::now() + GATE_DEADLINE, arrived: Notify::new() };
+        Self::listen(routes, Some(Arc::new(gate))).await
+    }
+
+    async fn listen(routes: Vec<(&str, Value)>, gate: Option<Arc<Gate>>) -> Self {
         let listener =
             TcpListener::bind(("127.0.0.1", 0)).await.expect("mock rpc: bind loopback listener");
         let addr = listener.local_addr().expect("mock rpc: read local addr");
@@ -77,8 +130,17 @@ impl MockRpc {
                 let requests = Arc::clone(&srv_requests);
                 let in_flight = Arc::clone(&srv_flight);
                 let peak_in_flight = Arc::clone(&srv_peak);
+                let gate = gate.clone();
                 tokio::spawn(async move {
-                    let _ = serve(stream, &routes, &requests, &in_flight, &peak_in_flight).await;
+                    let _ = serve(
+                        stream,
+                        &routes,
+                        &requests,
+                        &in_flight,
+                        &peak_in_flight,
+                        gate.as_deref(),
+                    )
+                    .await;
                 });
             }
         });
@@ -103,6 +165,8 @@ impl MockRpc {
     /// This is what lets a test *require* concurrency: a caller that never
     /// overlaps its requests leaves this at 1 no matter how it is configured,
     /// so an assertion on it cannot be satisfied by an unrelated speed-up.
+    /// Assert an exact peak only on a server from [`MockRpc::start_gated`];
+    /// without a gate the peak is a lower bound on the caller's concurrency.
     #[must_use]
     pub fn peak_in_flight(&self) -> usize {
         self.peak_in_flight.load(Ordering::SeqCst)
@@ -138,11 +202,16 @@ async fn serve(
     requests: &Mutex<Vec<Value>>,
     in_flight: &AtomicUsize,
     peak_in_flight: &AtomicUsize,
+    gate: Option<&Gate>,
 ) -> Result<(), String> {
     let open = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
     // A plain store is safe here: the count only ever rises while this request
     // is being served, so the last writer in always holds the maximum.
     peak_in_flight.fetch_max(open, Ordering::SeqCst);
+    if let Some(gate) = gate {
+        gate.arrived.notify_waiters();
+        gate.wait(peak_in_flight).await;
+    }
 
     let served = serve_inner(&mut stream, routes, requests).await;
 
