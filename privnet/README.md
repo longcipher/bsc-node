@@ -20,12 +20,15 @@ Full experiment report (setup, results, bugs found and fixed): [docs/privnet.md]
 
 - For `go`/`mixed`: a `geth` binary built from `bnb-chain/bsc` (`make geth`), or set
   `GETH_BIN`. Without it these modes exit with code 77 (skipped) and say so.
-- For every other mode: a `reth-bsc` binary that contains the private-network fixes
-  (Status-head fix, custom-chain defaults; see [docs/privnet.md](../docs/privnet.md)),
-  or set `RETH_BIN`. Until upstream PR
-  [bnb-chain/reth-bsc#546](https://github.com/bnb-chain/reth-bsc/pull/546) merges,
-  build from our branch (`https://github.com/akfork/reth-bsc`, branch
-  `fix/fix-privnet`); afterwards an upstream `develop` build works.
+- For every other mode: a `reth-bsc` binary that contains our fixes, or set `RETH_BIN`.
+  Build it from [`akfork/reth-bsc` branch `integration/develop`](https://github.com/akfork/reth-bsc/tree/integration/develop):
+  upstream `develop` plus the private-network fixes
+  ([bnb-chain/reth-bsc#546](https://github.com/bnb-chain/reth-bsc/pull/546)), the
+  builder fixes ([#599](https://github.com/bnb-chain/reth-bsc/pull/599),
+  [#600](https://github.com/bnb-chain/reth-bsc/pull/600),
+  [#601](https://github.com/bnb-chain/reth-bsc/pull/601)) and the akfork-only builder
+  APIs. [DEPENDENCIES.md](./DEPENDENCIES.md) lists every pinned branch, commit and
+  pull request.
 - `bash` 4.4+, `curl`, `python3`, standard Unix tools. Optional: `cast` (Foundry) for
   test transactions.
 
@@ -93,7 +96,7 @@ clients in one rotation, as on BSC testnet. rust1 and rust2 start the chain (two
 three validators keep it going), and go1 syncs it in full before `miner_start`: a go1
 that seals from the start makes its own block 1 before it has peers and stays on that
 fork. go-bsc can sync from reth-bsc only with reth-bsc that serves pre-London bodies
-without withdrawals (akfork/reth-bsc `9c4f410`, branch `fix/fix-privnet`; upstream
+without withdrawals (akfork/reth-bsc `8eb0604` on `integration/develop`; upstream
 [bnb-chain/reth-bsc#600](https://github.com/bnb-chain/reth-bsc/pull/600)). Older
 builds serve them with `withdrawals: []`, and go-bsc drops the peer with `retrieved
 block body is invalid`.

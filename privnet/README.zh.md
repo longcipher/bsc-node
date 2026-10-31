@@ -18,11 +18,14 @@
 
 - `go`/`mixed` 模式：由 `bnb-chain/bsc` 编译出的 `geth`（`make geth`），或设置 `GETH_BIN`。
   缺少时这两个模式以退出码 77（跳过）结束，并给出明确提示。
-- 其余模式：含私有网修复的 `reth-bsc`（Status 头修复、自定义链缺省值；见
-  [docs/privnet.zh.md](../docs/privnet.zh.md)），或设置 `RETH_BIN`。在上游 PR
-  [bnb-chain/reth-bsc#546](https://github.com/bnb-chain/reth-bsc/pull/546) 合并前，
-  请从我们的分支构建（`https://github.com/akfork/reth-bsc`，分支 `fix/fix-privnet`）；
-  合并后上游 `develop` 构建即可。
+- 其余模式：包含我们修复的 `reth-bsc`，或设置 `RETH_BIN`。请从
+  [`akfork/reth-bsc` 分支 `integration/develop`](https://github.com/akfork/reth-bsc/tree/integration/develop)
+  构建：上游 `develop` 加上私有网修复
+  （[bnb-chain/reth-bsc#546](https://github.com/bnb-chain/reth-bsc/pull/546)）、builder 修复
+  （[#599](https://github.com/bnb-chain/reth-bsc/pull/599)、
+  [#600](https://github.com/bnb-chain/reth-bsc/pull/600)、
+  [#601](https://github.com/bnb-chain/reth-bsc/pull/601)）以及仅 akfork 的 builder API。
+  [DEPENDENCIES.zh.md](./DEPENDENCIES.zh.md) 列出所有固定的分支、提交和 PR。
 - `bash` 4.4+、`curl`、`python3` 等常规 Unix 工具。`cast`（Foundry）可选，用于发送测试交易。
 
 ## 快速开始
@@ -85,7 +88,7 @@ GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc \
 出价，与 BSC 测试网相同。rust1、rust2 先启动并出块（三个验证人中的两个就能维持出块），go1 以
 full 模式同步完成后才 `miner_start`：若 go1 一启动就出块，它会在连上 peer 之前出自己的 1 号块，
 并一直停在那条分叉上。go-bsc 只能从这样的 reth-bsc 同步：London 之前的块体不带 withdrawals
-（akfork/reth-bsc `9c4f410`，分支 `fix/fix-privnet`；上游
+（akfork/reth-bsc `integration/develop` 上的 `8eb0604`；上游
 [bnb-chain/reth-bsc#600](https://github.com/bnb-chain/reth-bsc/pull/600)）。更早的版本给这些块体带上
 `withdrawals: []`，go-bsc 会以 `retrieved block body is invalid` 断开该 peer。
 

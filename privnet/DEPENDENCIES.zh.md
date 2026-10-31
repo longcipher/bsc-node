@@ -1,0 +1,61 @@
+# 依赖
+
+`privnet.sh` 和 builder 端到端测试所依赖的版本，以及每个修复在上游的位置。固定的分支、提交或
+PR 一旦变化，就更新本文件。
+
+## 版本
+
+| 组件 | 用于 | 来源 |
+|---|---|---|
+| reth-bsc | 除 `go` 外的所有模式 | [`akfork/reth-bsc` 分支 `integration/develop`](https://github.com/akfork/reth-bsc/tree/integration/develop)，提交 `7af1ee3`（端到端测试于 `6a04ff5`） |
+| go-bsc（`geth`） | `go`、`mixed`、`canary` | [`bnb-chain/bsc` v1.8.1](https://github.com/bnb-chain/bsc/releases/tag/v1.8.1)（`947ba1cb1ef05d4a5f71b738113a3d8b4c16f6b7`），未修改 |
+| rbuilder | builder 端到端测试 | `flashbots/rbuilder` 的 BSC 分叉，分支 `bsc-only`：`scripts/privnet-e2e.sh`，`BSC_NODE_DIR` 指向本仓库。它的 `reth_bsc` 库固定在 `6a04ff5`。 |
+| 系统合约 | 创世 | 固定版本的 `bnb-chain/bsc-genesis-contract`，见 [GENESIS.md](./GENESIS.md) |
+
+构建 reth-bsc：
+
+```bash
+git clone -b integration/develop https://github.com/akfork/reth-bsc
+cd reth-bsc && cargo build --release --bin reth-bsc
+export RETH_BIN=$PWD/target/release/reth-bsc
+```
+
+## reth-bsc：`integration/develop`
+
+上游 `develop`（`738307f`）加上下面的提交，顺序如下。对上游代码的每一处改动，要么是一个开着的
+上游 PR，要么标为仅 akfork。
+
+| 提交 | 改动 | 用途 | 上游 |
+|---|---|---|---|
+| `3509cc3` `0c0e5f0` `926eabf` | 全新私有网能启动：eth Status 带真实的启动头，自定义链有自己的缺省值，内置链规格按创世区分 | 所有 reth-bsc 模式 | [bnb-chain/reth-bsc#546](https://github.com/bnb-chain/reth-bsc/pull/546)，未合并 |
+| `333f998` `a5513c7` | `rbuilder_*` 状态 RPC：账户、代码、区块哈希、状态根 | rbuilder 的 `STATE=ipc` 或扩展 HTTP 状态源 | 仅 akfork |
+| `185d81b` | 最优出价淘汰与查询的调试日志 | 诊断出价选择 | 仅 akfork |
+| `e8b2ff6` `0f32c12` | `mev_params` 报告出价模拟器真实的预留时间（`BidSimulationLeftOver`） | builder 无需额外配置即可掌握最后一次出价的时机 | 仅 akfork，尚无 PR |
+| `c1617c8` `6bc8721` | 验证人在提交截止等待之后再读一次 BEP-322 出价存储，并按构建出的区块去重候选 | reth-bsc 验证人用 `mev_sendBid` 的出价出块 | [bnb-chain/reth-bsc#599](https://github.com/bnb-chain/reth-bsc/pull/599)，未合并 |
+| `8eb0604` | 只有块头带 `withdrawalsRoot` 时，块体才带 withdrawals | go-bsc 节点从 reth-bsc 同步（`canary`） | [bnb-chain/reth-bsc#600](https://github.com/bnb-chain/reth-bsc/pull/600)，未合并 |
+| `6a04ff5` `7af1ee3` | 出价对应的区块按出块节点的 gas 上限构建（而非 reth 的 30M 缺省值），`mev_params` 报告实时上限 | reth-bsc 验证人接受装满（达到 `GasCeil`）的出价 | [bnb-chain/reth-bsc#601](https://github.com/bnb-chain/reth-bsc/pull/601)，未合并 |
+
+所有 PR 都以上游 `develop` 为目标分支。合并后，上游 `develop` 构建即可运行所有模式；builder
+测试仍需要上面那些仅 akfork 的提交。
+
+## 本仓库
+
+`master` 包含 builder 端到端的全部工作，由分支 `builder-e2e-hardening` 快进合并而来
+（2026-10-31）：带可用快速终局的固定创世配置、加固后的 `privnet.sh`、go-bsc 出块节点接收
+BEP-322 出价、go-bsc 出块节点投票，以及带配置化 builder 白名单的 `canary` 模式。
+
+## 验证
+
+最近一次完整验证：2026-10-31，reth-bsc `6a04ff5`、go-bsc v1.8.1、本仓库 `master`
+（`d625c84` 加本文件）、rbuilder `bsc-only`（`1fece6f`，重负载订单的两行使用 `4674f82`
+的压测工具）。rbuilder 发布矩阵（其 `docs/testing.md`）的全部 27 行均通过（4 小时浸泡测试与其余各行并行，其余各行逐行运行）：所有模式
+（`fast`、`multi`、`pasteur`、`go`、`mixed`、`canary`），HTTP 与 IPC 状态源，`self` 与
+`pay_account` 付款方式，BEP-322 出价与 BEP-675 BidBlock（JSON-RPC 与 gRPC），blob、breathe
+与终局奖励区块，BEP-703 付款通道，节点冻结、网络故障、丢失两个区块的出块节点崩溃，30 分钟
+`canary` 浸泡测试（两种客户端共用 builder 的 BidBlock 出了 1 876 个块），以及每秒 50 个订单的
+4 小时 `fast` 浸泡测试（698 192 个订单上链，即所有有效订单；32 005 个区块由 builder 的出价封装；
+builder 内存 152–165 MiB）。
+
+这次验证发现并修复了三个 bug：rbuilder 为一个因自己刚出过轮外块而被 Parlia 禁止出块的轮值验证人
+构建区块；rbuilder 丢弃了被重组（或崩溃的节点）收回的区块中的订单；reth-bsc 按 30M 而不是自己的
+gas 上限构建出价区块（即上面的 `6a04ff5`）。

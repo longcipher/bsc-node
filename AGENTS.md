@@ -84,3 +84,4 @@ just mutation
 - The genesis deploys the system contracts, so the chain runs past every epoch. `BSCValidatorSet`'s init blob must carry the validators' BLS vote addresses, or fast finality stops at block 200 (`cannot collect enough votes`); `health` requires `finalized` to advance in the Rust-only modes.
 - Run exactly one miner per validator key. Use the handover actions to move block production.
 - `just privnet-verify-breathe` is the A/B regression for the daily breathe block: case A shrinks the interval and the chain must stall, case B proves the shipped default keeps producing with all four nodes agreeing. It runs in its own temp directory on `PORT_OFFSET` 2000 and needs go-bsc.
+- Commit to `master`, not a side branch. Whenever an external pin changes (the reth-bsc branch or commit, the go-bsc version, an upstream pull request, the rbuilder branch), update `privnet/DEPENDENCIES.md` and its `.zh.md` in the same commit.
