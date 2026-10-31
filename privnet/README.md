@@ -28,8 +28,9 @@ Full experiment report (setup, results, bugs found and fixed): [docs/privnet.md]
   [#600](https://github.com/bnb-chain/reth-bsc/pull/600),
   [#601](https://github.com/bnb-chain/reth-bsc/pull/601),
   [#603](https://github.com/bnb-chain/reth-bsc/pull/603),
-  [#604](https://github.com/bnb-chain/reth-bsc/pull/604)) and the akfork-only commits
-  (builder APIs, bids admitted while the simulator runs).
+  [#604](https://github.com/bnb-chain/reth-bsc/pull/604),
+  [#605](https://github.com/bnb-chain/reth-bsc/pull/605)) and the akfork-only builder
+  APIs.
   [DEPENDENCIES.md](./DEPENDENCIES.md) lists every pinned branch, commit and pull
   request.
 - `bash` 4.4+, `curl`, `python3`, standard Unix tools. Optional: `cast` (Foundry) for

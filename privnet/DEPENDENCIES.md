@@ -35,7 +35,7 @@ upstream code is either an open upstream pull request or marked akfork only.
 | `8eb0604` | A block body carries withdrawals only when its header has a `withdrawalsRoot` | go-bsc nodes syncing from reth-bsc (`canary`) | [bnb-chain/reth-bsc#600](https://github.com/bnb-chain/reth-bsc/pull/600), open |
 | `6a04ff5` `7af1ee3` | A bid's block is built towards the miner's gas ceiling, not reth's 30M default, and `mev_params` reports the live ceiling | reth-bsc validators accept full bids (filled to `GasCeil`) | [bnb-chain/reth-bsc#601](https://github.com/bnb-chain/reth-bsc/pull/601), open |
 | `c3e171a` | The bid simulator leaves its tokio worker (`block_in_place`) while it re-simulates the best bid, so `mev_sendBid` requests keep moving | a builder's last bid reaches the simulator before its cutoff | [bnb-chain/reth-bsc#603](https://github.com/bnb-chain/reth-bsc/pull/603), open |
-| `62b4ce1` | Bids are admitted on their own task, so a better bid stops the re-simulation of the best one, as go-bsc's `newBidLoop` does | full blocks (heavy rows) bid last are simulated before the cutoff | akfork only, branch [`fix/mev-admit-bids-during-simulation`](https://github.com/akfork/reth-bsc/tree/fix/mev-admit-bids-during-simulation) (stacked on #603), no pull request yet |
+| `62b4ce1` | Bids are admitted on their own task, so a better bid stops the re-simulation of the best one, as go-bsc's `newBidLoop` does | full blocks (heavy rows) bid last are simulated before the cutoff | [bnb-chain/reth-bsc#605](https://github.com/bnb-chain/reth-bsc/pull/605), open (stacked on #603) |
 
 All pull requests target upstream `develop`. Once they merge, an upstream `develop`
 build runs every mode; the builder tests still need the akfork-only commits above.
@@ -63,12 +63,12 @@ orders landed, every valid one; 32 006 blocks sealed from the builder's bids, 1 
 a reth-bsc validator never simulated for lack of time (3 of 272, in the IPC heavy-order
 row).
 
-That pass found four bugs, now fixed. reth-bsc's `mev_params` reported go-bsc's
-simulation reserve, not its own 120 ms cutoff (`e8b2ff6`, #604), and its bid simulator
-held a tokio worker while it re-simulated, which held up `mev_sendBid` (`c3e171a`, #603):
-every last bid came too late. A better bid could not stop reth-bsc's re-simulation of the
-best one, so a full last bid waited behind it (`62b4ce1`). rbuilder sent a full last bid
-too late for its 75–106 ms simulation (rbuilder `3117909`).
+That pass found four bugs, now fixed. reth-bsc's `mev_params` reported go-bsc's simulation
+reserve, not its own 120 ms cutoff (`e8b2ff6`, #604), and its bid simulator held a tokio
+worker while it re-simulated, which held up `mev_sendBid` (`c3e171a`, #603): every last
+bid came too late. A better bid could not stop reth-bsc's re-simulation of the best one,
+so a full last bid waited behind it (`62b4ce1`, #605). rbuilder sent a full last bid too
+late for its 75–106 ms simulation (rbuilder `3117909`).
 
 The pass before (2026-10-31, reth-bsc `6a04ff5`) found three: rbuilder built for an
 in-turn validator Parlia barred after its own out-of-turn block; rbuilder dropped orders

@@ -35,7 +35,7 @@ export RETH_BIN=$PWD/target/release/reth-bsc
 | `8eb0604` | 只有块头带 `withdrawalsRoot` 时，块体才带 withdrawals | go-bsc 节点从 reth-bsc 同步（`canary`） | [bnb-chain/reth-bsc#600](https://github.com/bnb-chain/reth-bsc/pull/600)，未合并 |
 | `6a04ff5` `7af1ee3` | 出价对应的区块按出块节点的 gas 上限构建（而非 reth 的 30M 缺省值），`mev_params` 报告实时上限 | reth-bsc 验证人接受装满（达到 `GasCeil`）的出价 | [bnb-chain/reth-bsc#601](https://github.com/bnb-chain/reth-bsc/pull/601)，未合并 |
 | `c3e171a` | 出价模拟器重新模拟最优出价时让出 tokio 工作线程（`block_in_place`），`mev_sendBid` 请求不再被卡住 | builder 的最后一次出价在截止前到达模拟器 | [bnb-chain/reth-bsc#603](https://github.com/bnb-chain/reth-bsc/pull/603)，未合并 |
-| `62b4ce1` | 出价在独立任务中接收，更优的出价可以打断对最优出价的重新模拟，与 go-bsc 的 `newBidLoop` 一致 | 最后一次出价的满块（重负载两行）在截止前得到模拟 | 仅 akfork，分支 [`fix/mev-admit-bids-during-simulation`](https://github.com/akfork/reth-bsc/tree/fix/mev-admit-bids-during-simulation)（基于 #603），尚无 PR |
+| `62b4ce1` | 出价在独立任务中接收，更优的出价可以打断对最优出价的重新模拟，与 go-bsc 的 `newBidLoop` 一致 | 最后一次出价的满块（重负载两行）在截止前得到模拟 | [bnb-chain/reth-bsc#605](https://github.com/bnb-chain/reth-bsc/pull/605)，未合并（基于 #603） |
 
 所有 PR 都以上游 `develop` 为目标分支。合并后，上游 `develop` 构建即可运行所有模式；builder
 测试仍需要上面那些仅 akfork 的提交。
@@ -63,7 +63,7 @@ BEP-322 出价、go-bsc 出块节点投票，以及带配置化 builder 白名�
 这次验证发现并修复了四个 bug。reth-bsc 的 `mev_params` 报告的是 go-bsc 的模拟预留时间，而不是
 它自己的 120 ms 截止（`e8b2ff6`，#604）；它的出价模拟器在重新模拟时占住一个 tokio 工作线程，
 卡住了 `mev_sendBid`（`c3e171a`，#603）：每一个最后出价都来得太晚。更优的出价无法打断 reth-bsc
-对最优出价的重新模拟，满块的最后出价只能排在后面等待（`62b4ce1`）。rbuilder 发出满块最后出价的
+对最优出价的重新模拟，满块的最后出价只能排在后面等待（`62b4ce1`，#605）。rbuilder 发出满块最后出价的
 时间太晚，不够它 75–106 ms 的模拟（rbuilder `3117909`）。
 
 上一次验证（2026-10-31，reth-bsc `6a04ff5`）发现了三个：rbuilder 为一个因自己刚出过轮外块而被

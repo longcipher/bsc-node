@@ -26,8 +26,8 @@
   [#600](https://github.com/bnb-chain/reth-bsc/pull/600)、
   [#601](https://github.com/bnb-chain/reth-bsc/pull/601)、
   [#603](https://github.com/bnb-chain/reth-bsc/pull/603)、
-  [#604](https://github.com/bnb-chain/reth-bsc/pull/604)）以及仅 akfork 的提交（builder API、
-  模拟器运行时接收出价）。
+  [#604](https://github.com/bnb-chain/reth-bsc/pull/604)、
+  [#605](https://github.com/bnb-chain/reth-bsc/pull/605)）以及仅 akfork 的 builder API。
   [DEPENDENCIES.zh.md](./DEPENDENCIES.zh.md) 列出所有固定的分支、提交和 PR。
 - `bash` 4.4+、`curl`、`python3` 等常规 Unix 工具。`cast`（Foundry）可选，用于发送测试交易。
 
