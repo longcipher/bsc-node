@@ -11,6 +11,8 @@
 #   fast      rust1 (miner) + rust2, Lorentz/Maxwell/Fermi   [fast, 450 ms]
 #   pasteur   as fast, plus Osaka/Mendel/Pasteur (BEP-675)   [pasteur, 450 ms]
 #   multi     rust1..rust3, three validators, turn length 4  [multi, 450 ms]
+#   canary    rust1 + rust2 + go1, three validators of both clients, like
+#             BSC testnet; turn length 4                       [multi, 450 ms]
 #
 # Actions:
 #   status            block / finalized / peers per node (no waiting)
@@ -36,10 +38,14 @@
 #   VOTE_WARMUP_BLOCKS       blocks a miner waits before voting [3]
 #   ETH_PROOF_WINDOW         reth --rpc.eth-proof-window [100000]
 #   RETH_EXTRA_ARGS          extra arguments for every reth-bsc node
+#   GETH_EXTRA_ARGS          extra arguments for every go-bsc node (e.g. --verbosity 4)
 #   HEALTH_BLOCKS     blocks the head must advance  [5]
 #   HEALTH_TIMEOUT    seconds for head / peers      [90 at 3 s, 45 at 450 ms]
 #   FINALITY_TIMEOUT  seconds for finality          [120 at 3 s, 60 at 450 ms]
 #   REQUIRE_FINALITY  1/0; whether finality must advance for health      [1]
+#   BUILDERS          builder addresses (comma-separated) every validator whitelists
+#                     from the start, the way an operator configures it: go-bsc's
+#                     [[Eth.Miner.Mev.Builders]], reth-bsc's BSC_ALLOWED_BUILDERS  [none]
 #   START_HEALTH      0 skips the health check at the end of start [1]
 #   KEEP_ON_FAILURE   1 leaves nodes running when start fails [0]
 #   STOP_TIMEOUT      seconds to wait for a node to exit [60]
@@ -69,7 +75,7 @@ usage() {
 
 ARG1="${1:-mixed}"
 case "$ARG1" in
-  go|rust|mixed|fast|pasteur|multi)
+  go|rust|mixed|fast|pasteur|multi|canary)
     MODE="$ARG1"; ACTION="${2:-start}"
     [ "$ACTION" = start ] || { usage >&2; exit 2; } ;;
   stop|status|health|env|accounts|clean|handover-to-rust|handover-to-go|system-contracts|genesis-check)
@@ -239,11 +245,15 @@ select_mode() { # select_mode <mode>: sets NET_* for a fresh start
     rust|fast|pasteur) NET_NODES="rust1 rust2" NET_MINERS="rust1" ;;
     mixed) NET_NODES="go1 go2 rust1 rust2" NET_MINERS="go1" ;;
     multi) NET_NODES="rust1 rust2 rust3" NET_MINERS="rust1 rust2 rust3" ;;
+    canary) NET_NODES="rust1 rust2 go1" NET_MINERS="rust1 rust2 go1" ;;
   esac
   case "$1" in
     go|rust|mixed)
       NET_PROFILE="${PROFILE:-classic}"
       [ "$NET_PROFILE" != multi ] || die "PROFILE=multi needs the multi mode (three validators)" ;;
+    canary)
+      NET_PROFILE=multi
+      [ -z "${PROFILE:-}" ] || [ "$PROFILE" = multi ] || die "mode canary uses profile multi, not PROFILE=$PROFILE" ;;
     *)
       NET_PROFILE="$1"
       [ -z "${PROFILE:-}" ] || [ "$PROFILE" = "$1" ] || die "mode $1 uses profile $1, not PROFILE=$PROFILE" ;;
@@ -251,6 +261,11 @@ select_mode() { # select_mode <mode>: sets NET_* for a fresh start
   NET_GENESIS="$(genesis_for "$NET_PROFILE")"
   NET_BLOCK_MS="$(block_ms_for "$NET_PROFILE")"
   NET_REQUIRE_FINALITY="${REQUIRE_FINALITY:-1}"
+  NET_BUILDERS="${BUILDERS:-}"
+  local builder
+  for builder in ${NET_BUILDERS//,/ }; do
+    [[ "$builder" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "BUILDERS: $builder is not an address"
+  done
   NET_PORT_OFFSET="$PORT_OFFSET"
   NET_IPC_DIR="$IPC_DIR"
 }
@@ -263,8 +278,8 @@ write_state() {
       "$NET_MODE" "$NET_PROFILE" "$NET_GENESIS" "$NET_GENESIS_SHA"
     printf 'NET_CHAIN_ID=%q\nNET_BLOCK_MS=%q\nNET_NODES=%q\nNET_MINERS=%q\n' \
       "$NET_CHAIN_ID" "$NET_BLOCK_MS" "$NET_NODES" "$NET_MINERS"
-    printf 'NET_PORT_OFFSET=%q\nNET_IPC_DIR=%q\nNET_REQUIRE_FINALITY=%q\n' \
-      "$NET_PORT_OFFSET" "$NET_IPC_DIR" "$NET_REQUIRE_FINALITY"
+    printf 'NET_PORT_OFFSET=%q\nNET_IPC_DIR=%q\nNET_REQUIRE_FINALITY=%q\nNET_BUILDERS=%q\n' \
+      "$NET_PORT_OFFSET" "$NET_IPC_DIR" "$NET_REQUIRE_FINALITY" "$NET_BUILDERS"
   } >"$STATE.tmp"
   mv "$STATE.tmp" "$STATE"
 }
@@ -302,7 +317,14 @@ print(value)' "$ACCOUNTS" "$1"
 }
 
 validator_index() { # validator_index <node> -> index into accounts.json validators
-  case "$1" in go1|rust1) echo 0 ;; rust2) echo 1 ;; rust3) echo 2 ;; *) die "$1 is not a validator node" ;; esac
+  # canary: go1 is the third validator, beside rust1 and rust2.
+  case "${NET_MODE:-}:$1" in
+    canary:go1) echo 2 ;;
+    *:go1 | *:rust1) echo 0 ;;
+    *:rust2) echo 1 ;;
+    *:rust3) echo 2 ;;
+    *) die "$1 is not a validator node" ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -523,22 +545,27 @@ launch() { # launch <node> <exe> <env assignments...> -- <args...>: start in <no
 }
 
 init_go_node() { # init_go_node <node>
-  local name="$1" dir key
+  local name="$1" dir key idx
   dir=$(node_dir "$name")
+  # A follower (go2) never seals; it keeps validator 0's keys as before.
+  case " $NET_MINERS " in
+    *" $name "*) idx=$(validator_index "$name") ;;
+    *) idx=0 ;;
+  esac
   mkdir -p "$dir"
   if [ ! -f "$dir/keystore_imported" ]; then
-    key=$(account "validators.0.privateKey")
+    key=$(account "validators.$idx.privateKey")
     printf '%s\n' "${key#0x}" >"$dir/validator.key"
     printf '%s\n' "$GETH_PASSWORD" >"$dir/passfile"
     "$GETH_BIN" account import --datadir "$dir" --password "$dir/passfile" "$dir/validator.key" >/dev/null 2>&1 ||
       die "geth account import failed for $name"
     touch "$dir/keystore_imported"
   fi
-  # The miner votes (fast finality) with validator 0's BLS key; `geth bls account import`
-  # takes the raw key and creates the wallet.
+  # The miner votes (fast finality) with its validator's BLS key; `geth bls account
+  # import` takes the raw key and creates the wallet.
   if [ ! -f "$dir/bls_imported" ]; then
     printf '%s\n' "$GETH_BLS_PASSWORD" >"$dir/blspassfile"
-    account "validators.0.blsPrivateKey" >"$dir/bls.key"
+    account "validators.$idx.blsPrivateKey" >"$dir/bls.key"
     "$GETH_BIN" bls account import --datadir "$dir" --blspassword "$dir/blspassfile" "$dir/bls.key" >/dev/null 2>&1 ||
       die "geth bls account import failed for $name"
     touch "$dir/bls_imported"
@@ -556,7 +583,7 @@ init_go_node() { # init_go_node <node>
   if [ ! -f "$dir/nodekey.hex" ]; then head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$dir/nodekey.hex"; fi
 }
 
-start_go_node() { # start_go_node <node> <miner|follower>
+start_go_node() { # start_go_node <node> <miner|follower> [join]: a joining miner seals only after join_go_miner
   local name="$1" role="$2" dir exe addr
   dir=$(node_dir "$name")
   node_ports "$name"
@@ -568,23 +595,35 @@ start_go_node() { # start_go_node <node> <miner|follower>
     --ipcpath "$(ipc_path "$name")" --nodekeyhex "$(cat "$dir/nodekey.hex")" --verbosity 3
     --override.breatheblockinterval "$BREATHE_BLOCK_INTERVAL")
   if [ "$role" = miner ]; then
-    addr=$(account "validators.0.address")
+    addr=$(account "validators.$(validator_index "$name").address")
     # go-bsc has no flag for MEV: the validator only accepts BEP-322 bids when the
-    # config file enables it (builders are then added with miner_addBuilder). Its
-    # BEP-675 gRPC service would listen on a fixed port (8552) that collides with
-    # rust1's, so it is turned off; go nodes take BEP-322 bids over HTTP only.
-    printf '[Eth.Miner.Mev]\nEnabled = true\nGRPCDisabled = true\n' >"$dir/mev.toml"
+    # config file enables it. Its builders come from the same file, as on a real
+    # validator (BUILDERS), or later from miner_addBuilder. Its BEP-675 gRPC service
+    # would listen on a fixed port (8552) that collides with rust1's, so it is turned
+    # off; go nodes take bids and BidBlocks over HTTP only.
+    {
+      printf '[Eth.Miner.Mev]\nEnabled = true\nGRPCDisabled = true\n'
+      local builder builders="${NET_BUILDERS:-}"
+      for builder in ${builders//,/ }; do
+        printf '\n[[Eth.Miner.Mev.Builders]]\nAddress = "%s"\n' "$builder"
+      done
+    } >"$dir/mev.toml"
     args+=(--config "$dir/mev.toml"
-      --mine --miner.etherbase "$addr" --unlock "$addr" --password "$dir/passfile"
+      --miner.etherbase "$addr" --unlock "$addr" --password "$dir/passfile"
       --allow-insecure-unlock --miner.recommit 1s
       --vote --blspassword "$dir/blspassfile" --vote-journal-path "$dir/voteJournal")
+    # A joining miner syncs first, in full: snap sync needs peers serving snap, which
+    # reth-bsc does not, and fails on tiny private chains anyway.
+    if [ "${3:-}" = join ]; then args+=(--syncmode full); else args+=(--mine); fi
   else
     # --syncmode full is required; snap fails on tiny private chains with
     # "missing trie node ... layer stale".
     args+=(--syncmode full)
   fi
+  local -a extra=()
+  if [ -n "${GETH_EXTRA_ARGS:-}" ]; then read -r -a extra <<<"$GETH_EXTRA_ARGS"; fi
   log "starting go-bsc $name ($role): p2p $P2P, http $HTTP, ipc $(ipc_path "$name")"
-  launch "$name" "$exe" -- "${args[@]}"
+  launch "$name" "$exe" -- "${args[@]}" "${extra[@]}"
   wait_rpc "$name" "$HTTP" 60
   assert_chain_id "$name" "$HTTP"
 }
@@ -627,6 +666,7 @@ start_rust_node() { # start_rust_node <node> <miner|follower> [trusted-enode...]
   # BREATHE_BLOCK_INTERVAL must match every other node's: it is consensus.
   launch "$name" "$exe" \
     BSC_DEBUG_BUILDER=true \
+    BSC_ALLOWED_BUILDERS="${NET_BUILDERS:-}" \
     BREATHE_BLOCK_INTERVAL="$BREATHE_BLOCK_INTERVAL" \
     BSC_VOTE_JOURNAL_DIR="$dir/voteJournal" \
     BSC_VOTE_WARMUP_BLOCKS="$VOTE_WARMUP_BLOCKS" \
@@ -666,7 +706,7 @@ min_max_of() { # min_max_of <what: head|finalized> <nodes...> -> "min max", or n
 
 expected_peers() { # expected_peers <node>
   case "$NET_MODE:$1" in
-    multi:*) echo 2 ;;
+    multi:* | canary:*) echo 2 ;;
     mixed:go1) echo 2 ;;
     *) echo 1 ;;
   esac
@@ -755,7 +795,7 @@ do_health() { # do_health: 0 if healthy, 1 otherwise; every failure is printed
   fi
 
   # Multi-validator: every validator must be sealing.
-  if [ "$NET_MODE" = multi ] && [ "$fails" -eq 0 ]; then
+  if { [ "$NET_MODE" = multi ] || [ "$NET_MODE" = canary ]; } && [ "$fails" -eq 0 ]; then
     local miners=""
     deadline=$((SECONDS + HEALTH_TIMEOUT))
     while :; do
@@ -1038,6 +1078,18 @@ start_mode() { # start_mode <mode>
       add_peer rust1 "$(enode_of rust3)"
       add_peer rust2 "$(enode_of rust3)"
       ;;
+    canary)
+      # The reth validators start the chain (two of three seal on their own); go1
+      # syncs it in full and only then seals. Started as a miner right away, go1
+      # seals its own block 1 before it has peers and never leaves that fork.
+      start_rust_node rust1 miner
+      start_rust_node rust2 miner "$(enode_of rust1)"
+      add_peer rust1 "$(enode_of rust2)"
+      start_go_node go1 miner join
+      add_peer go1 "$(enode_of rust1)"
+      add_peer go1 "$(enode_of rust2)"
+      join_go_miner go1 rust1
+      ;;
   esac
 
   if [ "$START_HEALTH" = 1 ]; then
@@ -1071,6 +1123,20 @@ wait_head_advance() { # wait_head_advance <node> <blocks> <timeout>
     sleep 1
   done
   die "$1 did not advance $2 blocks past $h0 within $3s"
+}
+
+join_go_miner() { # join_go_miner <go-node> <peer>: start sealing once synced with <peer>
+  health_defaults
+  local h ref deadline=$((SECONDS + HEALTH_TIMEOUT))
+  while :; do
+    node_ports "$2"; ref=$(head_of "$HTTP" || true)
+    node_ports "$1"; h=$(head_of "$HTTP" || true)
+    if [ -n "$h" ] && [ -n "$ref" ] && [ "$ref" -gt 0 ] && [ "$h" -ge $((ref - 1)) ]; then break; fi
+    [ "$SECONDS" -lt "$deadline" ] || die "$1 did not sync with $2 within ${HEALTH_TIMEOUT}s (at ${h:-?} of ${ref:-?})"
+    sleep 1
+  done
+  log "$1 synced to $h; starting its miner (miner_start on :$HTTP)"
+  [[ "$(rpc "$HTTP" miner_start)" == *'"result"'* ]] || die "miner_start on $1 failed"
 }
 
 prepare_handover() {

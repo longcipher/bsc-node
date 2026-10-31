@@ -352,3 +352,35 @@ Remaining limitations:
   as justified and its parent as finalized.
 - **Turn length starts at 1.** As on any fresh BSC chain, the genesis snapshot has turn
   length 1, and the contract's value (4) applies from the first epoch boundary.
+
+## 13. Both clients as validators: `canary` (2026-10-31)
+
+`canary` runs the `multi` chain with go1 (go-bsc) as the third validator, beside rust1
+and rust2. A builder then bids to both clients within one rotation, as on BSC testnet.
+`BUILDERS` whitelists it the way an operator does, in every mode: go-bsc miners get
+`[[Eth.Miner.Mev.Builders]]` in their config file, and reth-bsc miners get
+`BSC_ALLOWED_BUILDERS`. It needed two fixes.
+
+**go-bsc could not sync from reth-bsc.** go-bsc dropped every reth-bsc peer as soon as it
+synced from it. At `--verbosity 4` the reason is `retrieved block body is invalid`. The
+genesis has Shanghai's time in the past but London at block 8. go-bsc's `IsShanghai`
+requires London, so blocks 1-7 have no `withdrawalsRoot`. reth's `EthStorage` reads
+withdrawals for every block past the Shanghai timestamp, so reth-bsc served those
+bodies with `withdrawals: []`, and go-bsc's downloader rejects a body with withdrawals
+under a header without the root. reth-bsc now serves a body's withdrawals only when its
+header commits to them (akfork/reth-bsc `9c4f410`). Public BSC chains activated London
+long before Shanghai, so their bodies are unchanged. Upstream main has the same code.
+
+**A go-bsc validator must join, not start.** Started with `--mine`, go1 seals its own
+block 1 before it has peers, and then stays on that fork: its downloader stalls on the
+reth-bsc chain. So rust1 and rust2 start the chain (two of three validators keep it
+going), and go1 full-syncs it before `miner_start`.
+
+Measured with rbuilder's `scripts/privnet-e2e.sh MODE=canary` (reth-bsc `9c4f410`, go-bsc
+v1.8.1):
+
+| run | result |
+|---|---|
+| health | 2 peers per node, all three validators sealing, finality advancing, `BidBlockEnabled: true` on all three; `mev_hasBuilder` true for the builder on every validator without `miner_addBuilder` |
+| 90 transfers, BEP-322 bids | all mined; 32 blocks sealed from the builder's bids, for all three validators, both clients |
+| 30 min soak, BEP-675 BidBlocks | 5 400 transfers mined; 1 816 blocks sealed from the builder's BidBlocks (go1 646, rust1 604, rust2 566), over gRPC to reth-bsc and JSON-RPC to go-bsc, imported by every node; finality-reward blocks pay all 3 validators |

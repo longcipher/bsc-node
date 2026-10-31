@@ -40,6 +40,10 @@ RETH_BIN=/path/to/reth-bsc ./privnet.sh multi
 GETH_BIN=/path/to/geth ./privnet.sh go
 GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 
+# 两种客户端同时做验证人（同 BSC 测试网），并把 builder 加入白名单
+GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc \
+  BUILDERS=0x7564105E977516C53bE337314c7E53838967bDaC ./privnet.sh canary
+
 # 查看 / 校验 / 停止 / 清理
 ./privnet.sh status
 ./privnet.sh health             # 网络不健康时以非零码退出
@@ -65,6 +69,7 @@ GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 | `fast` | rust1（出块）、rust2 | `genesis-fast.json`（fast） | 450 ms | 创世即激活 Lorentz、Maxwell、Fermi |
 | `pasteur` | rust1（出块）、rust2 | `genesis-pasteur.json`（pasteur） | 450 ms | 再加 Osaka、Mendel、Pasteur：`BidBlockEnabled: true` |
 | `multi` | rust1、rust2、rust3（都出块） | `genesis-multi.json`（multi） | 450 ms | 3 个验证人，turn length 4，Pasteur 硬分叉集 |
+| `canary` | rust1、rust2、go1（都出块） | `genesis-multi.json`（multi） | 450 ms | 需要 go-bsc；即 `multi`，但 3 号验证人跑 go-bsc |
 
 `PROFILE=fast`（或 `pasteur`）可让 `go`、`rust`、`mixed` 改用该创世文件运行；与 go-bsc
 的组合未经测试。fast 系列复现主网的节奏：创世起依次为 1.5 s、0.75 s，然后 0.45 s 出块间隔；
@@ -75,6 +80,20 @@ GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 `multi` 模式下，1-200 块每个验证人轮流出一个块（与 BSC 一致，创世快照的 turn length 为 1）。
 从第一个 epoch 边界起，验证人集合与 turn length 都取自 `BSCValidatorSet`：
 此后每个验证人连续出 4 个块，builder 每 1.8 s 就会遇到一次轮次切换。
+
+`canary` 运行 `multi` 的链，但由 go1 担任 3 号验证人，于是 builder 在一轮轮换中会向两种客户端
+出价，与 BSC 测试网相同。rust1、rust2 先启动并出块（三个验证人中的两个就能维持出块），go1 以
+full 模式同步完成后才 `miner_start`：若 go1 一启动就出块，它会在连上 peer 之前出自己的 1 号块，
+并一直停在那条分叉上。go-bsc 只能从这样的 reth-bsc 同步：London 之前的块体不带 withdrawals
+（akfork/reth-bsc `9c4f410`，分支 `fix/fix-privnet`）。更早的版本给这些块体带上
+`withdrawals: []`，go-bsc 会以 `retrieved block body is invalid` 断开该 peer。
+
+### Builder 白名单
+
+`BUILDERS=0xA,0xB` 按验证人运营方的方式把 builder 加入白名单，所有模式都适用：go-bsc 出块节点
+在配置文件里写入 `[[Eth.Miner.Mev.Builders]]`，reth-bsc 出块节点在环境变量里设置
+`BSC_ALLOWED_BUILDERS`。名单随网络记录下来，handover 重启节点时会沿用。`miner_addBuilder`
+仍然可用，但重启后通过它添加的 builder 会丢失。
 
 ## 拓扑、端口与 IPC
 
@@ -103,19 +122,19 @@ GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 
 1. 每个节点进程存活（pidfile，并对照 `/proc` 校验）、RPC 有响应、chain id 与创世一致（绝不是 56/97）。
 2. 链头在 `HEALTH_TIMEOUT`（3 s 出块为 90 s，450 ms 为 45 s）内于每个节点上前进 `HEALTH_BLOCKS`（5）个块。
-3. 每个节点都有应有的 peer：1 个；`mixed` 中的 go1 以及 `multi` 中每个节点为 2 个。
+3. 每个节点都有应有的 peer：1 个；`mixed` 中的 go1 以及 `multi`、`canary` 中每个节点为 2 个。
 4. 所有节点在同一近期高度上的哈希相同。
-5. `multi`：最近 48 个块里三个验证人都出过块。
+5. `multi`/`canary`：最近 48 个块里三个验证人都出过块。
 6. `eth_getBlockByNumber("finalized")` 大于 0，且在 `FINALITY_TIMEOUT`（120 s / 60 s）内于每个节点上前进。
-   所有模式下都是必选项：go-bsc 出块节点也用导入 BLS 钱包的 0 号验证人 BLS 私钥投票
+   所有模式下都是必选项：go-bsc 出块节点也用导入 BLS 钱包的、所属验证人的 BLS 私钥投票
    （`REQUIRE_FINALITY=0` 改为警告）。
-7. `pasteur`/`multi`：每个出块节点的 `mev_params` 都报告 `BidBlockEnabled: true`。
+7. `pasteur`/`multi`/`canary`：每个出块节点的 `mev_params` 都报告 `BidBlockEnabled: true`。
 
 所有脚本的退出码：`0` 正常、`1` 失败、`2` 用法错误、`77` 跳过（缺少 go-bsc）。其他开关：
 `START_HEALTH=0`（`start` 时跳过检查）、`KEEP_ON_FAILURE=1`（`start` 失败时保留节点以便排查）、
 `VOTE_WARMUP_BLOCKS`（出块节点开始投票前等待的块数，默认 3）、`ETH_PROOF_WINDOW`
 （reth `--rpc.eth-proof-window`，默认 100000，供通过 `eth_getProof` 读状态的 builder 使用）、
-`RETH_EXTRA_ARGS`。
+`RETH_EXTRA_ARGS` 与 `GETH_EXTRA_ARGS`（例如 `--verbosity 4`）。
 
 ## Builder 端到端测试
 
@@ -127,7 +146,7 @@ GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 | `PRIVNET_RPC_URL` | 第一个出块节点的 HTTP RPC（rust1：`http://127.0.0.1:8549`；`go`/`mixed` 中为 go1） |
 | `PRIVNET_IPC_PATH` | 第一个出块节点的 IPC 套接字（`$PRIVNET_DIR/ipc/rust1.ipc`） |
 | `PRIVNET_MEV_GRPC` | 第一个出块节点的 BEP-675 gRPC（`127.0.0.1:8552`） |
-| `PRIVNET_VALIDATOR_RPC_URLS`、`PRIVNET_VALIDATOR_IPC_PATHS` | 全部出块节点（`multi`：8549、8553、8557） |
+| `PRIVNET_VALIDATOR_RPC_URLS`、`PRIVNET_VALIDATOR_IPC_PATHS` | 全部出块节点，1 号验证人在前（`multi`：8549、8553、8557；`canary`：8549、8553、8545） |
 | `PRIVNET_FOLLOWER_RPC_URL` | 一个不出块的节点（rust2：8553） |
 | `PRIVNET_BLOCK_INTERVAL_MS` | `3000` 或 `450` |
 | `PRIVNET_GENESIS` | 节点所用创世文件（builder 的 `chain` 也应指向它） |
@@ -143,7 +162,7 @@ GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 |---|---|---|
 | validator1（go1、rust1） | `0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A` | `0x1111…1111`，BLS `0x0707…0707` |
 | validator2（`multi` 中的 rust2） | `0x1563915e194D8CfBA1943570603F7606A3115508` | `0x2222…2222`，BLS `0x0808…0808` |
-| validator3（`multi` 中的 rust3） | `0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB` | `0x3333…3333`，BLS `0x0909…0909` |
+| validator3（`multi` 中的 rust3、`canary` 中的 go1） | `0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB` | `0x3333…3333`，BLS `0x0909…0909` |
 | builder | `0x7564105E977516C53bE337314c7E53838967bDaC` | `0x4444…4444` |
 | user1 | `0xe1fAE9b4fAB2F5726677ECfA912d96b0B683e6a9` | `0x5555…5555` |
 | user2 | `0xdb2430B4e9AC14be6554d3942822BE74811A1AF9` | `0x6666…6666` |

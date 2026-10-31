@@ -44,6 +44,10 @@ RETH_BIN=/path/to/reth-bsc ./privnet.sh multi
 GETH_BIN=/path/to/geth ./privnet.sh go
 GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc ./privnet.sh mixed
 
+# Both clients as validators, like BSC testnet, with the builder whitelisted
+GETH_BIN=/path/to/geth RETH_BIN=/path/to/reth-bsc \
+  BUILDERS=0x7564105E977516C53bE337314c7E53838967bDaC ./privnet.sh canary
+
 # Inspect / verify / stop / wipe
 ./privnet.sh status
 ./privnet.sh health             # exits non-zero unless the network is healthy
@@ -70,6 +74,7 @@ Run `./privnet.sh --help` for every action and variable.
 | `fast` | rust1 (miner), rust2 | `genesis-fast.json` (fast) | 450 ms | Lorentz, Maxwell, Fermi at genesis |
 | `pasteur` | rust1 (miner), rust2 | `genesis-pasteur.json` (pasteur) | 450 ms | + Osaka, Mendel, Pasteur: `BidBlockEnabled: true` |
 | `multi` | rust1, rust2, rust3 (all miners) | `genesis-multi.json` (multi) | 450 ms | 3 validators, turn length 4, Pasteur forks |
+| `canary` | rust1, rust2, go1 (all miners) | `genesis-multi.json` (multi) | 450 ms | needs go-bsc; `multi` with validator 3 on go-bsc |
 
 `PROFILE=fast` (or `pasteur`) runs `go`, `rust` or `mixed` on that genesis instead; it
 is untested with go-bsc. The fast profiles reproduce mainnet's schedule: 1.5 s, 0.75 s
@@ -82,6 +87,23 @@ In `multi`, blocks 1-200 rotate one block per validator (the genesis snapshot's 
 length is 1, as on BSC). From the first epoch boundary the set and turn length come
 from `BSCValidatorSet`: each validator then seals 4 consecutive blocks, so a builder
 sees a turn change every 1.8 s.
+
+`canary` runs the `multi` chain with go1 as validator 3, so a builder bids to both
+clients in one rotation, as on BSC testnet. rust1 and rust2 start the chain (two of
+three validators keep it going), and go1 syncs it in full before `miner_start`: a go1
+that seals from the start makes its own block 1 before it has peers and stays on that
+fork. go-bsc can sync from reth-bsc only with reth-bsc that serves pre-London bodies
+without withdrawals (akfork/reth-bsc `9c4f410`, branch `fix/fix-privnet`). Older
+builds serve them with `withdrawals: []`, and go-bsc drops the peer with `retrieved
+block body is invalid`.
+
+### Builder whitelist
+
+`BUILDERS=0xA,0xB` whitelists builders the way a validator operator does, in every
+mode: go-bsc miners get `[[Eth.Miner.Mev.Builders]]` in their config file, and reth-bsc
+miners get `BSC_ALLOWED_BUILDERS` in their environment. The list is recorded with the
+network, so the handovers restart nodes with it. `miner_addBuilder` still works, but a
+restart forgets what it added.
 
 ## Topology, ports and IPC
 
@@ -114,21 +136,23 @@ failure:
    and it is on the genesis chain id (never 56/97).
 2. The head advances `HEALTH_BLOCKS` (5) on every node within `HEALTH_TIMEOUT` (90 s at
    3 s blocks, 45 s at 450 ms).
-3. Every node has its peers: 1, or 2 for go1 in `mixed` and for every node in `multi`.
+3. Every node has its peers: 1, or 2 for go1 in `mixed` and for every node in `multi`
+   and `canary`.
 4. Every node has the same hash at a common recent height.
-5. `multi`: all three validators sealed blocks in the last 48.
+5. `multi`/`canary`: all three validators sealed blocks in the last 48.
 6. `eth_getBlockByNumber("finalized")` is above 0 and advances on every node within
    `FINALITY_TIMEOUT` (120 s / 60 s), in every mode: the go-bsc miner votes too, with
-   validator 0's BLS key imported into its BLS wallet (`REQUIRE_FINALITY=0` makes it a
+   its validator's BLS key imported into its BLS wallet (`REQUIRE_FINALITY=0` makes it a
    warning).
-7. `pasteur`/`multi`: every miner reports `BidBlockEnabled: true` in `mev_params`.
+7. `pasteur`/`multi`/`canary`: every miner reports `BidBlockEnabled: true` in
+   `mev_params`.
 
 Exit codes for every script: `0` ok, `1` failure, `2` usage, `77` skipped (go-bsc
 missing). Other knobs: `START_HEALTH=0` (skip the check in `start`),
 `KEEP_ON_FAILURE=1` (leave nodes running when `start` fails), `VOTE_WARMUP_BLOCKS`
 (blocks before a miner votes, default 3), `ETH_PROOF_WINDOW` (reth
 `--rpc.eth-proof-window`, default 100000, for builders that read state through
-`eth_getProof`), and `RETH_EXTRA_ARGS`.
+`eth_getProof`), `RETH_EXTRA_ARGS` and `GETH_EXTRA_ARGS` (e.g. `--verbosity 4`).
 
 ## Builder end-to-end tests
 
@@ -141,7 +165,7 @@ the target is not chain 56/97:
 | `PRIVNET_RPC_URL` | first miner's HTTP RPC (rust1: `http://127.0.0.1:8549`; go1 in `go`/`mixed`) |
 | `PRIVNET_IPC_PATH` | first miner's IPC socket (`$PRIVNET_DIR/ipc/rust1.ipc`) |
 | `PRIVNET_MEV_GRPC` | first miner's BEP-675 gRPC (`127.0.0.1:8552`) |
-| `PRIVNET_VALIDATOR_RPC_URLS`, `PRIVNET_VALIDATOR_IPC_PATHS` | every miner (`multi`: 8549, 8553, 8557) |
+| `PRIVNET_VALIDATOR_RPC_URLS`, `PRIVNET_VALIDATOR_IPC_PATHS` | every miner, validator 1 first (`multi`: 8549, 8553, 8557; `canary`: 8549, 8553, 8545) |
 | `PRIVNET_FOLLOWER_RPC_URL` | a non-mining node (rust2: 8553) |
 | `PRIVNET_BLOCK_INTERVAL_MS` | `3000` or `450` |
 | `PRIVNET_GENESIS` | the genesis file the nodes run (also what a builder's `chain` should point to) |
@@ -158,7 +182,7 @@ it races its own node.
 |---|---|---|
 | validator1 (go1, rust1) | `0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A` | `0x1111…1111`, BLS `0x0707…0707` |
 | validator2 (rust2 in `multi`) | `0x1563915e194D8CfBA1943570603F7606A3115508` | `0x2222…2222`, BLS `0x0808…0808` |
-| validator3 (rust3 in `multi`) | `0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB` | `0x3333…3333`, BLS `0x0909…0909` |
+| validator3 (rust3 in `multi`, go1 in `canary`) | `0x5CbDd86a2FA8Dc4bDdd8a8f69dBa48572EeC07FB` | `0x3333…3333`, BLS `0x0909…0909` |
 | builder | `0x7564105E977516C53bE337314c7E53838967bDaC` | `0x4444…4444` |
 | user1 | `0xe1fAE9b4fAB2F5726677ECfA912d96b0B683e6a9` | `0x5555…5555` |
 | user2 | `0xdb2430B4e9AC14be6554d3942822BE74811A1AF9` | `0x6666…6666` |

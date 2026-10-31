@@ -312,3 +312,30 @@ enode 取自 `admin_nodeInfo`，`PORT_OFFSET` 让多个网络共用一台主机�
   reth-bsc 与 go-bsc 的 API 后端一样，把链头视为 justified，把其父块视为 finalized。
 - **turn length 从 1 开始。** 和任何新起的 BSC 链一样，创世快照的 turn length 为 1，
   合约中的值（4）从第一个 epoch 边界起生效。
+
+## 13. 两种客户端同时做验证人：`canary`（2026-10-31）
+
+`canary` 运行 `multi` 的链，由 go1（go-bsc）担任第三个验证人，与 rust1、rust2 并列。于是 builder
+在一轮轮换中会向两种客户端出价，与 BSC 测试网相同。`BUILDERS` 按运营方的方式把 builder 加入白名单，
+所有模式都适用：go-bsc 出块节点在配置文件里写入 `[[Eth.Miner.Mev.Builders]]`，reth-bsc 出块节点
+设置 `BSC_ALLOWED_BUILDERS`。为此需要两处修复。
+
+**go-bsc 无法从 reth-bsc 同步。** go-bsc 一开始从 reth-bsc 同步就断开它。用 `--verbosity 4`
+可以看到原因：`retrieved block body is invalid`。创世里 Shanghai 的时间已经过去，但 London 在
+8 号块。go-bsc 的 `IsShanghai` 要求已过 London，所以 1-7 号块没有 `withdrawalsRoot`。reth 的
+`EthStorage` 对时间戳过了 Shanghai 的每个块都读取 withdrawals，于是 reth-bsc 给这些块体带上
+`withdrawals: []`；块头没有该 root 而块体带 withdrawals，go-bsc 的下载器就会拒绝。现在 reth-bsc
+只在块头承诺了 withdrawals 时才在块体里提供它（akfork/reth-bsc `9c4f410`）。公开的 BSC 链在
+Shanghai 之前很久就激活了 London，块体不受影响。上游 main 也有同样的代码。
+
+**go-bsc 验证人必须加入，而不是一开始就出块。** 若以 `--mine` 启动，go1 会在连上 peer 之前出
+自己的 1 号块，之后一直停在那条分叉上：它的下载器在 reth-bsc 的链上卡住。所以由 rust1、rust2
+先启动链（三个验证人中的两个就能维持出块），go1 以 full 模式同步完成后再 `miner_start`。
+
+用 rbuilder 的 `scripts/privnet-e2e.sh MODE=canary` 实测（reth-bsc `9c4f410`，go-bsc v1.8.1）：
+
+| 运行 | 结果 |
+|---|---|
+| 健康检查 | 每个节点 2 个 peer，三个验证人都在出块，终局推进，三者都报告 `BidBlockEnabled: true`；不调用 `miner_addBuilder`，每个验证人上 `mev_hasBuilder` 对该 builder 都为 true |
+| 90 笔转账，BEP-322 出价 | 全部上链；32 个块由 builder 的出价封装，覆盖三个验证人、两种客户端 |
+| 30 分钟浸泡，BEP-675 BidBlock | 5 400 笔转账全部上链；1 816 个块由 builder 的 BidBlock 封装（go1 646、rust1 604、rust2 566），reth-bsc 走 gRPC、go-bsc 走 JSON-RPC，所有节点都导入；finality reward 块奖励全部 3 个验证人 |
