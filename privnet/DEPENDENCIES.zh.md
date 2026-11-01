@@ -36,7 +36,7 @@ export RETH_BIN=$PWD/target/release/reth-bsc
 | `6a04ff5` `7af1ee3` | 出价对应的区块按出块节点的 gas 上限构建（而非 reth 的 30M 缺省值），`mev_params` 报告实时上限 | reth-bsc 验证人接受装满（达到 `GasCeil`）的出价 | [bnb-chain/reth-bsc#601](https://github.com/bnb-chain/reth-bsc/pull/601)，未合并 |
 | `c3e171a` | 出价模拟器重新模拟最优出价时让出 tokio 工作线程（`block_in_place`），`mev_sendBid` 请求不再被卡住 | builder 的最后一次出价在截止前到达模拟器 | [bnb-chain/reth-bsc#603](https://github.com/bnb-chain/reth-bsc/pull/603)，未合并 |
 | `62b4ce1` | 出价在独立任务中接收，更优的出价可以打断对最优出价的重新模拟，与 go-bsc 的 `newBidLoop` 一致 | 最后一次出价的满块（重负载两行）在截止前得到模拟 | [bnb-chain/reth-bsc#605](https://github.com/bnb-chain/reth-bsc/pull/605)，未合并（基于 #603） |
-| `8a3b53f` `d11e769` | `rbuilder_*` 读取遇到磁盘回滚时重试 150 ms，仍失败则返回 `-32052`：重组替换了节点已持久化的区块时，reth 原地截断 changeset 文件，而更早开始的读取仍按旧长度读，于是读取失败（"failed to fill whole buffer"）或 reth 的静态文件读取器 panic（"slice index starts at … but ends at 0"）；读取改在阻塞线程上运行，panic 不再断开连接 | 会重组已持久化区块的网络（`multi`）上，builder 依赖节点计算的状态根 | 仅 akfork（竞争本身在 reth 的存储层，尚未报告上游） |
+| `8a3b53f` `d11e769` | `rbuilder_*` 读取遇到磁盘回滚时重试 150 ms，仍失败则返回 `-32052`：重组替换了节点已持久化的区块时，reth 原地截断 changeset 文件，而更早开始的读取仍按旧长度读，于是读取失败（"failed to fill whole buffer"）或 reth 的静态文件读取器 panic（"slice index starts at … but ends at 0"）；读取改在阻塞线程上运行，panic 不再断开连接 | 会重组已持久化区块的网络（`multi`）上，builder 依赖节点计算的状态根 | 仅 akfork（竞争本身在 reth 的存储层：[paradigmxyz/reth#28225](https://github.com/paradigmxyz/reth/issues/28225)） |
 
 所有 PR 都以上游 `develop` 为目标分支。合并后，上游 `develop` 构建即可运行所有模式；builder
 测试仍需要上面那些仅 akfork 的提交。
