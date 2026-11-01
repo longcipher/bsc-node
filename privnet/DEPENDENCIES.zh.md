@@ -7,9 +7,9 @@ PR 一旦变化，就更新本文件。
 
 | 组件 | 用于 | 来源 |
 |---|---|---|
-| reth-bsc | 除 `go` 外的所有模式 | [`akfork/reth-bsc` 分支 `integration/develop`](https://github.com/akfork/reth-bsc/tree/integration/develop)，提交 `d11e769`，已端到端测试（完整矩阵在两个状态 RPC 提交之前的 `62b4ce1` 上通过） |
+| reth-bsc | 除 `go` 外的所有模式 | [`akfork/reth-bsc` 分支 `integration/develop`](https://github.com/akfork/reth-bsc/tree/integration/develop)，提交 `d11e769`，已端到端测试（完整矩阵，见[验证](#验证)） |
 | go-bsc（`geth`） | `go`、`mixed`、`canary` | [`bnb-chain/bsc` v1.8.1](https://github.com/bnb-chain/bsc/releases/tag/v1.8.1)（`947ba1cb1ef05d4a5f71b738113a3d8b4c16f6b7`），未修改 |
-| rbuilder | builder 端到端测试 | `flashbots/rbuilder` 的 BSC 分叉，分支 `bsc-only`：`scripts/privnet-e2e.sh`，`BSC_NODE_DIR` 指向本仓库。它的 `reth_bsc` 库固定在 `62b4ce1`。 |
+| rbuilder | builder 端到端测试 | `flashbots/rbuilder` 的 BSC 分叉，分支 `integration/develop`（`bsc-only` 与之一致）：`scripts/privnet-e2e.sh`，`BSC_NODE_DIR` 指向本仓库。它的 `reth_bsc` 库固定在 `d11e769`。 |
 | 系统合约 | 创世 | 固定版本的 `bnb-chain/bsc-genesis-contract`，见 [GENESIS.md](./GENESIS.md) |
 
 构建 reth-bsc：
@@ -49,9 +49,17 @@ BEP-322 出价、go-bsc 出块节点投票，以及带配置化 builder 白名�
 
 ## 验证
 
-最近一次完整验证：2026-11-01，reth-bsc `62b4ce1`、go-bsc v1.8.1、本仓库 `master`
-（`3429df6` 加本文件）、rbuilder `bsc-only`（`694c7d0`）。rbuilder 发布矩阵（其
-`docs/testing.md`）的全部 27 行均通过（4 小时浸泡测试与其余各行并行，其余各行逐行运行）：
+最近一次完整验证：2026-11-01，reth-bsc `d11e769`、go-bsc v1.8.1、本仓库 `master`
+（`ea8c62b` 加本文件）、rbuilder `integration/develop`（`644d30e`），与生产环境一样只运行
+并行 builder（16 个冲突解决线程，完整排序）。rbuilder 发布矩阵的全部 27 行均通过，排序
+builder 与并行 builder 同时运行的带 BidBlock 和负载的 `multi` 行也通过；两个浸泡测试与其余
+各行并行运行。每一行最多 1 个 builder 出价来不及模拟（出块节点崩溃那一行，共 142 个）。
+4 小时浸泡测试有 698 236 个订单上链，即所有有效订单，32 006 个区块由 builder 的出价封装，
+64 006 个出价中 0 个来不及模拟；`canary` 浸泡测试中两种客户端共用其 BidBlock 封装了
+2 194 个区块。每秒 400 个订单时，16 和 32 个冲突解决线程分别使用 8.7 和 14.2 个核。
+
+同一天的上一次验证，reth-bsc `62b4ce1`、本仓库 `master`（`3429df6`）、rbuilder `bsc-only`
+（`694c7d0`，排序 builder）：rbuilder 发布矩阵（其 `docs/testing.md`）的全部 27 行均通过（4 小时浸泡测试与其余各行并行，其余各行逐行运行）：
 所有模式（`fast`、`multi`、`pasteur`、`go`、`mixed`、`canary`），HTTP 与 IPC 状态源，`self`
 与 `pay_account` 付款方式，BEP-322 出价与 BEP-675 BidBlock（JSON-RPC 与 gRPC），blob、breathe
 与终局奖励区块，含 7M gas 订单区块的 BEP-703 付款通道，节点冻结、网络故障、丢失一个区块的
@@ -73,6 +81,6 @@ BEP-322 出价、go-bsc 出块节点投票，以及带配置化 builder 白名�
 `rbuilder_calculateStateRoot` 在磁盘回滚期间返回 "failed to fill whole buffer"，或在 reth 的
 静态文件读取器 panic 时断开连接；使用 `d11e769` 和 rbuilder `1fe99dc` 后，该行连续四次通过。
 
-上一次验证（2026-10-31，reth-bsc `6a04ff5`）发现了三个：rbuilder 为一个因自己刚出过轮外块而被
+再上一次验证（2026-10-31，reth-bsc `6a04ff5`）发现了三个：rbuilder 为一个因自己刚出过轮外块而被
 Parlia 禁止出块的轮值验证人构建区块；rbuilder 丢弃了被重组（或崩溃的节点）收回的区块中的订单；
 reth-bsc 按 30M 而不是自己的 gas 上限构建出价区块（即上面的 `6a04ff5`）。

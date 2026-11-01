@@ -7,9 +7,9 @@ upstream. Update this file whenever a pinned branch, commit or pull request chan
 
 | Component | Used by | Source |
 |---|---|---|
-| reth-bsc | every mode except `go` | [`akfork/reth-bsc` branch `integration/develop`](https://github.com/akfork/reth-bsc/tree/integration/develop), commit `d11e769`, end-to-end tested (the full matrix on `62b4ce1`, before the two state-RPC commits) |
+| reth-bsc | every mode except `go` | [`akfork/reth-bsc` branch `integration/develop`](https://github.com/akfork/reth-bsc/tree/integration/develop), commit `d11e769`, end-to-end tested (the full matrix, see [Verification](#verification)) |
 | go-bsc (`geth`) | `go`, `mixed`, `canary` | [`bnb-chain/bsc` v1.8.1](https://github.com/bnb-chain/bsc/releases/tag/v1.8.1) (`947ba1cb1ef05d4a5f71b738113a3d8b4c16f6b7`), unmodified |
-| rbuilder | builder end-to-end tests | BSC fork of `flashbots/rbuilder`, branch `bsc-only`: `scripts/privnet-e2e.sh` with `BSC_NODE_DIR` set to this repository. It pins its `reth_bsc` library to `62b4ce1`. |
+| rbuilder | builder end-to-end tests | BSC fork of `flashbots/rbuilder`, branch `integration/develop` (`bsc-only` follows it): `scripts/privnet-e2e.sh` with `BSC_NODE_DIR` set to this repository. It pins its `reth_bsc` library to `d11e769`. |
 | System contracts | genesis | pinned `bnb-chain/bsc-genesis-contract` revision, see [GENESIS.md](./GENESIS.md) |
 
 Build reth-bsc:
@@ -50,9 +50,20 @@ the hardened `privnet.sh`, BEP-322 bids on go-bsc miners, go-bsc miners that vot
 
 ## Verification
 
-Last full pass: 2026-11-01, with reth-bsc `62b4ce1`, go-bsc v1.8.1, this repository's
-`master` (`3429df6` plus this file) and rbuilder `bsc-only` (`694c7d0`). All 27 rows of
-rbuilder's release matrix (`docs/testing.md` there) pass (the 4-hour soak beside the
+Last full pass: 2026-11-01, with reth-bsc `d11e769`, go-bsc v1.8.1, this repository's
+`master` (`ea8c62b` plus this file) and rbuilder `integration/develop` (`644d30e`),
+running only the parallel builder, as production does (16 resolver threads, full
+sorting). All 27 rows of rbuilder's release matrix pass, and so does `multi` with
+BidBlocks and load with the ordering and parallel builders together; the two soaks ran
+beside the others. No row had more than 1 builder bid late (1 of 142, with the
+block-producer crash). The 4-hour soak landed 698 236 orders, every valid one, in
+32 006 blocks sealed from the builder's bids, 0 of its 64 006 bids late; the `canary`
+soak, 2 194 blocks sealed from its BidBlocks by both clients. At 400 orders/s, 16 and 32
+resolver threads keep 8.7 and 14.2 cores busy.
+
+The pass before, the same day, with reth-bsc `62b4ce1`, this repository's `master`
+(`3429df6`) and rbuilder `bsc-only` (`694c7d0`, its ordering builders): all 27 rows of
+rbuilder's release matrix (`docs/testing.md` there) passed (the 4-hour soak beside the
 others, which ran one at a time): every mode (`fast`, `multi`, `pasteur`, `go`, `mixed`,
 `canary`), HTTP and IPC state, `self` and `pay_account` payment, BEP-322 bids and BEP-675
 BidBlocks (JSON-RPC and gRPC), blobs, breathe and finality-reward blocks, the BEP-703
@@ -79,7 +90,7 @@ answering "failed to fill whole buffer", or dropping the connection when reth's
 static-file reader panicked, during an on-disk unwind; with `d11e769` and rbuilder
 `1fe99dc` that row passed four times in a row.
 
-The pass before (2026-10-31, reth-bsc `6a04ff5`) found three: rbuilder built for an
+The pass before that (2026-10-31, reth-bsc `6a04ff5`) found three: rbuilder built for an
 in-turn validator Parlia barred after its own out-of-turn block; rbuilder dropped orders
 of blocks a reorg (or a crashed node) took back; and reth-bsc built a bid's block towards
 30M instead of its gas ceiling (`6a04ff5` above).
