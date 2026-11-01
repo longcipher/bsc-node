@@ -7,7 +7,7 @@ upstream. Update this file whenever a pinned branch, commit or pull request chan
 
 | Component | Used by | Source |
 |---|---|---|
-| reth-bsc | every mode except `go` | [`akfork/reth-bsc` branch `integration/develop`](https://github.com/akfork/reth-bsc/tree/integration/develop), commit `8a3b53f`, end-to-end tested (the full matrix on `62b4ce1`, the commit before) |
+| reth-bsc | every mode except `go` | [`akfork/reth-bsc` branch `integration/develop`](https://github.com/akfork/reth-bsc/tree/integration/develop), commit `d11e769`, end-to-end tested (the full matrix on `62b4ce1`, before the two state-RPC commits) |
 | go-bsc (`geth`) | `go`, `mixed`, `canary` | [`bnb-chain/bsc` v1.8.1](https://github.com/bnb-chain/bsc/releases/tag/v1.8.1) (`947ba1cb1ef05d4a5f71b738113a3d8b4c16f6b7`), unmodified |
 | rbuilder | builder end-to-end tests | BSC fork of `flashbots/rbuilder`, branch `bsc-only`: `scripts/privnet-e2e.sh` with `BSC_NODE_DIR` set to this repository. It pins its `reth_bsc` library to `62b4ce1`. |
 | System contracts | genesis | pinned `bnb-chain/bsc-genesis-contract` revision, see [GENESIS.md](./GENESIS.md) |
@@ -36,7 +36,7 @@ upstream code is either an open upstream pull request or marked akfork only.
 | `6a04ff5` `7af1ee3` | A bid's block is built towards the miner's gas ceiling, not reth's 30M default, and `mev_params` reports the live ceiling | reth-bsc validators accept full bids (filled to `GasCeil`) | [bnb-chain/reth-bsc#601](https://github.com/bnb-chain/reth-bsc/pull/601), open |
 | `c3e171a` | The bid simulator leaves its tokio worker (`block_in_place`) while it re-simulates the best bid, so `mev_sendBid` requests keep moving | a builder's last bid reaches the simulator before its cutoff | [bnb-chain/reth-bsc#603](https://github.com/bnb-chain/reth-bsc/pull/603), open |
 | `62b4ce1` | Bids are admitted on their own task, so a better bid stops the re-simulation of the best one, as go-bsc's `newBidLoop` does | full blocks (heavy rows) bid last are simulated before the cutoff | [bnb-chain/reth-bsc#605](https://github.com/bnb-chain/reth-bsc/pull/605), open (stacked on #603) |
-| `8a3b53f` | `rbuilder_*` reads that run into an on-disk unwind are retried for 150 ms, then answered with `-32052`: when a reorg replaces a block the node had persisted, reth truncates the changeset files while older reads still use their length ("failed to fill whole buffer") | the builder's node-side state roots on a network that reorgs persisted blocks (`multi`) | akfork only (the race itself is in reth's storage, not reported upstream) |
+| `8a3b53f` `d11e769` | `rbuilder_*` reads that run into an on-disk unwind are retried for 150 ms, then answered with `-32052`: when a reorg replaces a block the node had persisted, reth truncates the changeset files while older reads still use their length, so a read fails ("failed to fill whole buffer") or reth's static-file reader panics ("slice index starts at … but ends at 0"); the reads run on a blocking thread, so the panic no longer drops the connection | the builder's node-side state roots on a network that reorgs persisted blocks (`multi`) | akfork only (the race itself is in reth's storage, not reported upstream) |
 
 All pull requests target upstream `develop`. Once they merge, an upstream `develop`
 build runs every mode; the builder tests still need the akfork-only commits above.
@@ -75,8 +75,9 @@ Since then (2026-11-01), rbuilder's parallel builder, which had never run, was f
 (rbuilder `96fd974`, `ecffc96`) and passed 21 rows of the matrix and a 20-minute soak with
 reth-bsc `62b4ce1`. With the ordering and the parallel builders together,
 `multi` with BidBlocks and load failed on reth-bsc's `rbuilder_calculateStateRoot`
-answering "failed to fill whole buffer" during an on-disk unwind; with `8a3b53f` and
-rbuilder `1fe99dc` that row passed three times in a row.
+answering "failed to fill whole buffer", or dropping the connection when reth's
+static-file reader panicked, during an on-disk unwind; with `d11e769` and rbuilder
+`1fe99dc` that row passed four times in a row.
 
 The pass before (2026-10-31, reth-bsc `6a04ff5`) found three: rbuilder built for an
 in-turn validator Parlia barred after its own out-of-turn block; rbuilder dropped orders
