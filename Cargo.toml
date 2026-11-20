@@ -11,6 +11,7 @@ repository = "https://github.com/longcipher/bsc-node"
 description = "BSC dual-client consistency probe: cross-validate Go geth-bsc against Rust reth-bsc and cryptographically verify state via MPT proofs"
 keywords = ["bsc", "bnb-chain", "reth", "geth", "consistency", "merkle-patricia-trie"]
 categories = ["command-line-utilities", "cryptography"]
+rust-version = "1.100"
 
 [workspace.dependencies]
 clap = "4.6.7"
@@ -185,9 +186,15 @@ missing_docs = "warn"
 rust_2018_idioms = { level = "warn", priority = -1 }
 unreachable_pub = "allow"
 unused_must_use = "deny"
+raw_borrows_via_references = "warn"
 
 [workspace.lints.rustdoc]
 all = "warn"
+
+# Cargo's own lint system (shipped in 1.100): the only unused-dependency
+# check. It runs as part of a normal all-targets `cargo check`/`clippy`.
+[workspace.lints.cargo]
+unused_dependencies = "warn"
 
 [profile.bench]
 debug = true

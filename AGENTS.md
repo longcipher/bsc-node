@@ -39,7 +39,7 @@ temp file and run `cargo mutants --in-diff <diff-file>` for that file only, with
 60 mutants / 300 s. Never add a whole-repo mutation recipe: `just check-mutation-scope` fails
 `just lint` when an unbounded mutation command appears in a build or CI file.
 
-`just lint` is the gate: `typos`, `rumdl check`, `cargo sort -w -g -c` for TOML key order, `cargo +nightly fmt --check`, `cargo +nightly clippy -D warnings` and `cargo shear` for unused dependencies. CI installs exactly `just`, `cargo-shear`, `cargo-sort`, `typos-cli`, `rumdl`, `cargo-llvm-cov` and `cargo-nextest`, so `just lint` must not call anything else.
+`just lint` is the gate: `typos`, `rumdl check`, `cargo sort -w -g -c` for TOML key order, `cargo +nightly fmt --check`, `cargo +nightly clippy -D warnings` and Cargo's native `unused_dependencies` lint for unused dependencies. CI installs exactly `just`, `cargo-sort`, `typos-cli`, `rumdl`, `cargo-llvm-cov` and `cargo-nextest`, so `just lint` must not call anything else.
 
 ## Rust probe rules
 
@@ -48,6 +48,12 @@ temp file and run `cargo mutants --in-diff <diff-file>` for that file only, with
 - Workspace lints deny `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `dbg_macro` and `allow_attributes`. The CLI lifts the print lint with `#![expect(clippy::print_stdout)]` at the top of `main.rs`; use `#[expect(lint, reason = "...")]`, never a bare `#[allow(...)]`.
 - `clippy.toml` carries the thresholds (`too-many-lines-threshold = 120`, `cognitive-complexity-threshold = 30`, `max-struct-bools = 4`). Keep new code inside them instead of widening the file.
 - `.cargo/mutants.toml` deliberately has no `exclude_globs`: an earlier version excluded every source file and silently turned 168 mutants into zero. Do not add exclusion globs, and keep `skip_calls = ["with_capacity"]` as the only skip.
+
+## Rust 1.100 baseline
+
+- Workspace MSRV is Rust 1.100. Prefer newly stabilized features and APIs over older workarounds; do not add feature gates for anything already stable in 1.100.
+- `[workspace.lints.cargo]` enables Cargo's native `unused_dependencies` lint, the only unused-dependency check; do not reintroduce a third-party checker. Its level is `warn`, and `.cargo/config.toml` sets `build.warnings = "deny"`, so a finding fails the gate.
+- `.cargo/config.toml` sets resolver `incompatible-rust-versions = "fallback"` (MSRV-aligned resolution) and `registry.global-min-publish-age = "5 days"` (Rust 1.100 dependency cooldown); keep both.
 
 ## Dependency choices
 

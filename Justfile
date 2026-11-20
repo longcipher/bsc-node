@@ -20,7 +20,6 @@ lint:
   cargo sort -w -g -c
   cargo +nightly fmt --all -- --check
   RUSTC_WRAPPER= cargo +nightly clippy --all -- -D warnings
-  cargo shear
   just check-mutation-scope
 
 # Run tests
@@ -298,7 +297,6 @@ clean:
 # Install all required development tools
 setup:
   cargo install cargo-mutants
-  cargo install cargo-shear
   cargo install cargo-sort
   cargo install cargo-workspace-inheritance-check
   cargo install cargo-llvm-cov
@@ -333,10 +331,6 @@ test-nextest:
 # Run miri on unsafe code (needs `rustup +nightly component add miri`)
 miri:
   cargo +nightly miri test --all-features
-
-# Check for unused dependencies
-unused-deps:
-  cargo shear --check
 
 # Check that workspace inheritance is used consistently (local only)
 inheritance-check:
